@@ -1,0 +1,55 @@
+name: Build & Publish Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux-x86_64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install C++ build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build git python3 libsqlite3-dev libssl-dev zlib1g-dev
+
+      - name: Build C++ Core (DDNet-Server)
+        run: |
+          git clone https://github.com /tmp/DDNetPP
+          git -C /tmp/DDNetPP checkout 4e458fa81
+          git -C /tmp/DDNetPP apply "$GITHUB_WORKSPACE/core/ddnetpr_core_v11.7_lts.patch"
+          cmake -S /tmp/DDNetPP -B /tmp/DDNetPP/build -G Ninja -DCLIENT=OFF -DMYSQL=OFF
+          cmake --build /tmp/DDNetPP/build -j$(nproc)
+
+      - name: Build Rust Manager & Plugins
+        run: cargo build --release --workspace
+
+      - name: Package Release Bundle
+        run: |
+          PKG="ddnetpr-${GITHUB_REF_NAME}-linux-x86_64"
+          mkdir -p "$PKG/plugins" "$PKG/configs" "$PKG/logs" "$PKG/sdk"
+          install -m 755 /tmp/DDNetPP/build/DDNetPP "$PKG/DDNet-Server"
+          install -m 755 target/release/ddnet_plugins "$PKG/ddnet_plugins"
+          for bin in target/release/plugin_*; do
+            [ -x "$bin" ] && [[ "$bin" != *.d ]] && [[ "$(basename "$bin")" != "plugin_template" ]] && install -m 755 "$bin" "$PKG/plugins/"
+          done
+          cp -a /tmp/DDNetPP/data "$PKG/data"
+          cp -a crates/ddnet_sdk crates/ddnet-plugin-template "$PKG/sdk/"
+          cp -a docs "$PKG/docs"
+          cp README.md LICENSE scripts/setup.sh "$PKG/"
+          chmod +x "$PKG/setup.sh"
+          tar -czf "${PKG}.tar.gz" "$PKG"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ddnetpr-${{ github.ref_name }}-linux-x86_64.tar.gz
+          generate_release_notes: true

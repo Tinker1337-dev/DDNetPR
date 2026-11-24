@@ -1,0 +1,9 @@
+[package]
+name = "plugin_template"
+version = "11.0.0"
+edition = "2024"
+authors = ["Tinker1337"]
+
+[dependencies]
+ddnet_sdk = { path = "../ddnet_sdk" }
+

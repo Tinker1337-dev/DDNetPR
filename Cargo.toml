@@ -1,0 +1,18 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/ddnet_sdk",
+    "crates/ddnet_plugins",
+    "crates/ddnet-plugin-template",
+    "plugins/*",
+]
+
+[workspace.package]
+edition = "2024"
+authors = ["Tinker1337"]
+license = "MIT"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true

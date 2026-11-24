@@ -1,0 +1,7 @@
+[package]
+name = "plugin_potato"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ddnet_sdk = { path = "../../crates/ddnet_sdk" }

@@ -1,0 +1,9 @@
+[package]
+name = "ddnet_sdk"
+version = "11.0.0"
+edition = "2024"
+authors = ["Tinker1337"]
+description = "DDNetPR Server-First Plugin Platform SDK v11.0 LTS (2026)"
+license = "MIT"
+
+[dependencies]

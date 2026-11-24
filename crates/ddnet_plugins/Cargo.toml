@@ -1,0 +1,10 @@
+[package]
+name = "ddnet_plugins"
+version = "11.7.0"
+edition = "2024"
+authors = ["Tinker1337"]
+description = "DDNetPR Plugin Manager & IPC Router v11.7 LTS (2026)"
+license = "MIT"
+
+[dependencies]
+
