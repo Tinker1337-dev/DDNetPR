@@ -27,6 +27,7 @@ jobs:
         run: |
           git clone https://github.com/DDNetPP/DDNetPP.git /tmp/DDNetPP
           git -C /tmp/DDNetPP checkout 4e458fa81
+          git -C /tmp/DDNetPP submodule update --init --recursive
           git -C /tmp/DDNetPP apply "$GITHUB_WORKSPACE/core/ddnetpr_core_v11.7_lts.patch"
       - name: Build DDNetPR Server
         run: |

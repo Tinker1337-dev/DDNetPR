@@ -25,6 +25,7 @@ jobs:
         run: |
           git clone https://github.com/DDNetPP/DDNetPP.git /tmp/DDNetPP
           git -C /tmp/DDNetPP checkout 4e458fa81
+          git -C /tmp/DDNetPP submodule update --init --recursive
           git -C /tmp/DDNetPP apply "$GITHUB_WORKSPACE/core/ddnetpr_core_v11.7_lts.patch"
           cmake -S /tmp/DDNetPP -B /tmp/DDNetPP/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCLIENT=OFF -DSERVER=ON
           cmake --build /tmp/DDNetPP/build -j$(nproc)
