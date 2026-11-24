@@ -12,7 +12,7 @@ jobs:
   build-linux-x86_64:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
@@ -23,7 +23,7 @@ jobs:
 
       - name: Build C++ Core (DDNet-Server)
         run: |
-          git clone https://github.com /tmp/DDNetPP
+          git clone https://github.com/DDNetPP/DDNetPP.git /tmp/DDNetPP
           git -C /tmp/DDNetPP checkout 4e458fa81
           git -C /tmp/DDNetPP apply "$GITHUB_WORKSPACE/core/ddnetpr_core_v11.7_lts.patch"
           cmake -S /tmp/DDNetPP -B /tmp/DDNetPP/build -G Ninja -DCLIENT=OFF -DMYSQL=OFF
