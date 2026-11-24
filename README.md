@@ -93,8 +93,9 @@ cargo build --release --workspace
 git clone https://github.com/DDNetPP/DDNetPP.git
 cd DDNetPP
 git checkout 4e458fa81
+git submodule update --init --recursive
 git apply ../core/ddnetpr_core_v11.7_lts.patch
-cmake -S . -B build -DCLIENT=OFF -DMYSQL=OFF
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCLIENT=OFF -DSERVER=ON
 cmake --build build -j\$(nproc)
 ```
 
