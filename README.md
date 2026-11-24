@@ -1,5 +1,10 @@
 # DDNetPR — Server-First Plugin Platform for DDNet++ (v11.7.0 LTS)
 
+[![CI](https://github.com/vipmasuavip-ui/DDNetPR/actions/workflows/ci.yml/badge.svg)](https://github.com/vipmasuavip-ui/DDNetPR/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/badge/release-v11.7.0--lts-brightgreen.svg)](https://github.com/vipmasuavip-ui/DDNetPR/releases)
+[![Rust](https://img.shields.io/badge/rust-edition%202024-orange.svg?logo=rust)](https://www.rust-lang.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 **DDNetPR** is a high-performance, server-first plugin platform and Rust SDK built on top of the **DDNet++ (C++20)** game server. It enables developers to write custom game modes, mini-games, economy systems, and real-time `OnSnap` visual effects in **Rust (Edition 2024)** with **hot-reload**, process isolation, and **zero client modifications** (works out of the box with standard DDNet 0.6 / 20.x clients).
 
 ---
@@ -85,7 +90,7 @@ cargo build --release --workspace
 
 #### Patch & Build the C++20 Server Core
 ```bash
-git clone https://github.com
+git clone https://github.com/DDNetPP/DDNetPP.git
 cd DDNetPP
 git checkout 4e458fa81
 git apply ../core/ddnetpr_core_v11.7_lts.patch
