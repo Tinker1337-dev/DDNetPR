@@ -134,4 +134,4 @@ See [`docs/01_SDK_REFERENCE.md`](docs/01_SDK_REFERENCE.md) for the complete API 
 
 ## License
 
-Licensed under the [MIT License](LICENSE). Based on [DDNet++](https://https://github.com/DDNetPP/DDNetPP) and [DDraceNetwork](https://ddnet.org).
+Licensed under the [MIT License](LICENSE). Based on [DDNet++](https://github.com/DDNetPP/DDNetPP) and [DDraceNetwork](https://ddnet.org).
