@@ -19,14 +19,14 @@ jobs:
       - name: Install C++ build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake ninja-build git python3 libsqlite3-dev libssl-dev zlib1g-dev
+          sudo apt-get install -y build-essential cmake ninja-build git python3 libsqlite3-dev libssl-dev libcurl4-openssl-dev zlib1g-dev
 
       - name: Build C++ Core (DDNet-Server)
         run: |
           git clone https://github.com/DDNetPP/DDNetPP.git /tmp/DDNetPP
           git -C /tmp/DDNetPP checkout 4e458fa81
           git -C /tmp/DDNetPP apply "$GITHUB_WORKSPACE/core/ddnetpr_core_v11.7_lts.patch"
-          cmake -S /tmp/DDNetPP -B /tmp/DDNetPP/build -G Ninja -DCLIENT=OFF -DMYSQL=OFF
+          cmake -S /tmp/DDNetPP -B /tmp/DDNetPP/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCLIENT=OFF -DSERVER=ON
           cmake --build /tmp/DDNetPP/build -j$(nproc)
 
       - name: Build Rust Manager & Plugins
