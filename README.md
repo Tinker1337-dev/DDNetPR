@@ -1,7 +1,7 @@
 # DDNetPR — Server-First Plugin Platform for DDNet++ (v11.7.0 LTS)
 
-[![CI](https://github.com/vipmasuavip-ui/DDNetPR/actions/workflows/ci.yml/badge.svg)](https://github.com/vipmasuavip-ui/DDNetPR/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/badge/release-v11.7.0--lts-brightgreen.svg)](https://github.com/vipmasuavip-ui/DDNetPR/releases)
+[![CI](https://github.com/Tinker1337-dev/DDNetPR/actions/workflows/ci.yml/badge.svg)](https://github.com/Tinker1337-dev/DDNetPR/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/badge/release-v11.7.0--lts-brightgreen.svg)](https://github.com/Tinker1337-dev/DDNetPR/releases)
 [![Rust](https://img.shields.io/badge/rust-edition%202024-orange.svg?logo=rust)](https://www.rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
