@@ -19,7 +19,7 @@ jobs:
       - name: Install C++ build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake ninja-build git python3 libsqlite3-dev libssl-dev libcurl4-openssl-dev zlib1g-dev
+          sudo apt-get install -y build-essential cmake ninja-build git python3 libsqlite3-dev libssl-dev libcurl4-openssl-dev libpng-dev zlib1g-dev
 
       - name: Build C++ Core (DDNet-Server)
         run: |
