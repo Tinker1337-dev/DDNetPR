@@ -46,6 +46,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "plugin_katana"
+version = "11.0.0"
+dependencies = [
+ "ddnet_sdk",
+]
+
+[[package]]
 name = "plugin_mod"
 version = "0.2.0"
 dependencies = [

@@ -1323,6 +1323,23 @@ fn remap_visual_cmd(pname: &str, cmd: &str) -> Vec<String> {
             }
             vec![]
         }
+        Some("spawn_visual_pickup_follow") if p.len() == 8 => {
+            if let Some(Ok(lid)) = p.get(1).map(|s| s.parse::<i32>())
+                && let Some(s) = alloc_slot(&mut pools.pickups, pname, lid)
+            {
+                return vec![format!(
+                    "spawn_visual_pickup_follow {} {} {} {} {} {} {}",
+                    s,
+                    p.get(2).unwrap_or(&"0"),
+                    p.get(3).unwrap_or(&"0"),
+                    p.get(4).unwrap_or(&"0"),
+                    p.get(5).unwrap_or(&"0"),
+                    p.get(6).unwrap_or(&"0"),
+                    p.get(7).unwrap_or(&"0")
+                )];
+            }
+            vec![]
+        }
         Some("remove_visual_pickup") if p.len() == 2 => {
             if let Some(Ok(lid)) = p.get(1).map(|s| s.parse::<i32>())
                 && let Some(s) = pools.pickups.remove(&(pname.to_string(), lid))

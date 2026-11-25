@@ -93,7 +93,7 @@ ddnet_sdk::plugin! {
 - **Внешность и маскировка:** `api.set_skin(cid, skin)`, `api.set_skin_to(viewer, target, skin)`, `api.clear_skin_to(viewer, target)`, `api.set_clan(cid, clan)`, `api.set_color(cid, custom, body, feet)`, `api.set_vip_plus(cid, bool)`.
 - **Визуалы `OnSnap` (0 FX/сек, изолированы по плагинам):**
   - Лазеры (`0..127`): `api.spawn_visual_laser(id, x1, y1, x2, y2, kind)`, `api.remove_visual_laser(id)`, `api.clear_visual_lasers()`.
-  - Пикапы (`0..127`): `api.spawn_visual_pickup(id, kind, sub, x, y)`, `api.remove_visual_pickup(id)`.
+  - Пикапы (`0..127`): `api.spawn_visual_pickup(id, kind, sub, x, y)`, `api.spawn_visual_pickup_follow(id, kind, sub, cid, off_x, off_y, bob_amp)` (плавная 50 Гц привязка к игроку в `OnSnap` без `FastTick` и без подбора `PICKUPFLAG_NO_PREDICT`), `api.remove_visual_pickup(id)`.
   - Ти (`0..63`): `api.spawn_visual_tee(id, x, y, skin, body, feet, freeze)`, `api.remove_visual_tee(id)`, `api.clear_visual_tees()`.
   - Векторный текст (`0..31`, 3x5 `A-Z`, `0-9`, спецсимволы, до 24 символов): `api.spawn_visual_text(id, x, y, scale, kind, text)`, `api.remove_visual_text(id)`, `api.clear_visual_texts()`.
 - **Временные FX (лимит 110 FX/сек):** `api.spawn_fx("explosion"|"hammer"|"damage", x, y)`, `api.spawn_laser(x1, y1, x2, y2)`, `api.spawn_laser_ex(x1, y1, x2, y2, kind)`, `api.spawn_projectile(id, PlayerId(cid), pos, vel, gravity, ttl_ms)`, `api.despawn_projectile(id)`.

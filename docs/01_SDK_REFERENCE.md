@@ -40,7 +40,7 @@ ddnet_sdk::plugin! {
 - **Скины и цвета:** `set_skin`, `set_skin_to(viewer, target, skin)`, `clear_skin_to`, `set_clan`, `set_color`, `set_vip_plus`
 - **Визуалы `OnSnap` (0 FX/сек, изолированы по плагинам):**
   - `spawn_visual_laser` / `remove_visual_laser` / `clear_visual_lasers` (пул `0..127`)
-  - `spawn_visual_pickup` / `remove_visual_pickup` (пул `0..127`)
+  - `spawn_visual_pickup` / `spawn_visual_pickup_follow` / `remove_visual_pickup` (пул `0..127`)
   - `spawn_visual_tee` / `remove_visual_tee` / `clear_visual_tees` (пул `0..63`)
   - `spawn_visual_text` / `remove_visual_text` / `clear_visual_texts` (пул `0..31`, 3x5 шрифт до 24 символов)
 - **Временные FX (`110 FX/сек`):** `spawn_fx`, `spawn_laser`, `spawn_laser_ex`, `spawn_projectile`, `despawn_projectile`, `send_progress_bar`

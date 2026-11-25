@@ -48,7 +48,7 @@ DDNetPR/
 │   ├── ddnet_sdk/                     # Ergonomic Rust SDK v11.0.0 (macros, spatial queries, HUD, IPC)
 │   ├── ddnet_plugins/                 # Core IPC router, visual pool isolator & process supervisor
 │   └── ddnet-plugin-template/         # Starter template & generator script for new plugins
-├── plugins/                           # 12 production-ready plugins built with ddnet_sdk
+├── plugins/                           # 13 production-ready plugins built with ddnet_sdk
 │   ├── plugin_hub/                    # Central lobby, player profiles, coin economy & leaderboards
 │   ├── plugin_city/                   # City RP mode (jobs, salaries, roles, custom commands)
 │   ├── plugin_potato/                 # Hot Potato mini-game with real-time timers & visual indicators
@@ -60,7 +60,7 @@ DDNetPR/
 │   ├── plugin_sunstrike/              # Custom AoE spell & raycast combat mechanics
 │   ├── plugin_perf/                   # Real-time tickrate, IPC latency & resource profiler
 │   ├── plugin_reboot/                 # Graceful scheduled restarts with countdown alerts
-│   └── plugin_v10_test/               # Backward-compatibility verification suite (API v10 -> v11)
+│   └── plugin_katana, plugin_v10_test/               # Backward-compatibility verification suite (API v10 -> v11)
 ├── docs/                              # Architecture guides, SDK reference & AI plugin writer prompt
 ├── scripts/
 │   └── setup.sh                       # Interactive server configuration wizard

@@ -1281,6 +1281,23 @@ impl ServerApi {
             id, kind, sub, x, y
         ));
     }
+    /// Spawns a persistent visual pickup attached to a player CID.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_visual_pickup_follow(
+        &self,
+        id: i32,
+        kind: i32,
+        sub: i32,
+        cid: i32,
+        off_x: f32,
+        off_y: f32,
+        bob_amp: f32,
+    ) {
+        self.raw(&format!(
+            "spawn_visual_pickup_follow {} {} {} {} {:.1} {:.1} {:.1}",
+            id, kind, sub, cid, off_x, off_y, bob_amp
+        ));
+    }
     /// Removes a persistent visual pickup by ID.
     pub fn remove_visual_pickup(&self, id: i32) {
         self.raw(&format!("remove_visual_pickup {}", id));
@@ -1490,8 +1507,8 @@ impl ServerApi {
                     y: p[2 + off].parse().ok()?,
                     vx: p[3 + off].parse().ok()?,
                     vy: p[4 + off].parse().ok()?,
-                    alive: p[5 + off] == "1",
-                    frozen: p.get(6 + off).and_then(|v| v.parse().ok()).unwrap_or(0),
+                    frozen: p[5 + off].parse().ok().unwrap_or(0),
+                    alive: p.get(6 + off).map(|v| *v == "1").unwrap_or(true),
                     weapon: p.get(7 + off).and_then(|v| v.parse().ok()).unwrap_or(0),
                 };
                 self.states.insert(cid, pos);
