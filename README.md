@@ -1,9 +1,10 @@
 # DDNetPR — Server-First Plugin Platform for DDNet++ (v11.7.0 LTS)
 
-![Core](https://shields.io)
-![Rust](https://shields.io)
-![Release](https://shields.io)
-![License](https://shields.io)
+![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/Tinker1337-dev/DDNetPR/ci.yml)
+![Static Badge](https://img.shields.io/badge/DDNet%2B%2B_Core-C%2B%2B20-00599C?logo=cplusplus&label=DDNet%2B%2B%20Core&color=00599C)
+![Static Badge](https://img.shields.io/badge/Rust-Edition_2024-orange?logo=rust)
+![GitHub Release](https://img.shields.io/github/v/release/Tinker1337-dev/DDNetPR)
+![Static Badge](https://img.shields.io/badge/license-MIT-blue)
 
 **DDNetPR** turns a **DDNet++ (C++20)** game server into a modular **Rust** platform. Write custom game modes, mini-games, economy systems, and real-time `OnSnap` visuals in **Rust (Edition 2024)** with **zero-downtime hot-reload**, process isolation, and **zero client modifications** — players join from any standard **DDNet 0.6 / 20.x** client.
 
