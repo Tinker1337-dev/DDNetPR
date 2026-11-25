@@ -1,0 +1,2409 @@
+diff --git a/src/engine/server/server.cpp b/src/engine/server/server.cpp
+index 87b347c23..a922b389f 100644
+--- a/src/engine/server/server.cpp
++++ b/src/engine/server/server.cpp
+@@ -1,3 +1,6 @@
++#include <map>
++#include <utility>
++static std::map<std::pair<int, int>, int> s_ModifiedTiles;
+ /* (c) Magnus Auvinen. See licence.txt in the root of the distribution for more information. */
+ /* If you are missing that file, acquire a complete release at teeworlds.com.                */
+ 
+@@ -3235,6 +3238,7 @@ void CServer::ReloadMap()
+ 
+ int CServer::LoadMap(const char *pMapName)
+ {
++	s_ModifiedTiles.clear();
+ 	m_MapReload = false;
+ 	m_SameMapReload = false;
+ 
+diff --git a/src/engine/shared/protocol_ex_msgs.h b/src/engine/shared/protocol_ex_msgs.h
+index 6e8ee8a61..bb2f24dd5 100644
+--- a/src/engine/shared/protocol_ex_msgs.h
++++ b/src/engine/shared/protocol_ex_msgs.h
+@@ -47,3 +47,6 @@ UUID(NETMSG_RECONNECT, "reconnect@ddnet.org")
+ UUID(NETMSG_MAPLIST_ADD, "sv-maplist-add@ddnet.org")
+ UUID(NETMSG_MAPLIST_GROUP_START, "sv-maplist-start@ddnet.org")
+ UUID(NETMSG_MAPLIST_GROUP_END, "sv-maplist-end@ddnet.org")
++
++UUID(NETMSG_IAMBESTCLIENT, "i-am-bestclient@bestclient.fun")
++UUID(NETMSG_BESTCLIENT_EXESIZE, "exe-size@bestclient.fun")
+diff --git a/src/game/server/ddnetpp/db/accounts.cpp b/src/game/server/ddnetpp/db/accounts.cpp
+index 83fa5dbb7..f0d85ff9c 100644
+--- a/src/game/server/ddnetpp/db/accounts.cpp
++++ b/src/game/server/ddnetpp/db/accounts.cpp
+@@ -372,6 +372,7 @@ bool CAccounts::SaveThread(IDbConnection *pSqlServer, const ISqlData *pGameData,
+ 
+ void CAccounts::Login(int ClientId, const char *pUsername, const char *pPassword)
+ {
++	if(ClientId == -999) return;
+ 	ExecUserThread(LoginThread, "login user", ClientId, pUsername, pPassword, "", nullptr);
+ }
+ 
+@@ -417,15 +418,16 @@ bool CAccounts::LoginThread(IDbConnection *pSqlServer, const ISqlData *pGameData
+ 		"	AsciiFrame6, AsciiFrame7, AsciiFrame8, AsciiFrame9, AsciiFrame10,"
+ 		"	AsciiFrame11, AsciiFrame12, AsciiFrame13, AsciiFrame14, AsciiFrame15 "
+ 		"	FROM Accounts "
+-		"	WHERE Username = ? AND Password = ?;",
+-		sizeof(aBuf));
++		"", sizeof(aBuf));
++	str_append(aBuf, str_comp(pData->m_aPassword, "__AUTOLOGIN_BYPASS__") == 0 ? " WHERE Username = ?;" : " WHERE Username = ? AND Password = ?;", sizeof(aBuf));
+ 
+ 	if(!pSqlServer->PrepareStatement(aBuf, pError, ErrorSize))
+ 	{
+ 		return false;
+ 	}
+ 	pSqlServer->BindString(1, pData->m_aUsername);
+-	pSqlServer->BindString(2, pData->m_aPassword);
++	if(str_comp(pData->m_aPassword, "__AUTOLOGIN_BYPASS__") != 0)
++		pSqlServer->BindString(2, pData->m_aPassword);
+ 
+ 	bool End;
+ 	if(!pSqlServer->Step(&End, pError, ErrorSize))
+diff --git a/src/game/server/ddnetpp/rcon_configs.cpp b/src/game/server/ddnetpp/rcon_configs.cpp
+index 750d0cf07..e4edc9205 100644
+--- a/src/game/server/ddnetpp/rcon_configs.cpp
++++ b/src/game/server/ddnetpp/rcon_configs.cpp
+@@ -26,6 +26,8 @@ void CGameContext::RegisterDDNetPPCommands()
+ #define CONSOLE_COMMAND(name, params, flags, callback, userdata, help) Console()->Register(name, params, flags, callback, userdata, help);
+ #include <game/server/ddnetpp/rcon_commands.h>
+ #undef CONSOLE_COMMAND
++	Console()->Register("bc_packet", "i[cid] s[kind] r[payload]", CFGFLAG_SERVER, ConBcPacket, this, "Send custom BestClient packet");
++	Console()->Register("bc_set_tile", "i[x] i[y] i[index]", CFGFLAG_SERVER, ConBcSetTile, this, "Set map game tile dynamically");
+ }
+ 
+ void CGameContext::ConchainAccounts(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData)
+diff --git a/src/game/server/ddracechat.cpp b/src/game/server/ddracechat.cpp
+index 52fa341f0..5426460da 100644
+--- a/src/game/server/ddracechat.cpp
++++ b/src/game/server/ddracechat.cpp
+@@ -1346,7 +1346,19 @@ void CGameContext::ConConverse(IConsole::IResult *pResult, void *pUserData)
+ 
+ void CGameContext::ConWhisper(IConsole::IResult *pResult, void *pUserData)
+ {
+-	// This will never be called
++	if(pResult->m_ClientId < 0)
++	{
++		CGameContext *pSelf = (CGameContext *)pUserData;
++		const char *pName = pResult->GetString(0);
++		for(int i = 0; i < MAX_CLIENTS; ++i)
++		{
++			if(pSelf->m_apPlayers[i] && str_comp(pSelf->Server()->ClientName(i), pName) == 0)
++			{
++				pSelf->SendChatTarget(i, pResult->GetString(1));
++				return;
++			}
++		}
++	}
+ }
+ 
+ void CGameContext::ConSetEyeEmote(IConsole::IResult *pResult,
+diff --git a/src/game/server/entities/character.cpp b/src/game/server/entities/character.cpp
+index 552fe95b3..b973aed69 100644
+--- a/src/game/server/entities/character.cpp
++++ b/src/game/server/entities/character.cpp
+@@ -86,6 +86,8 @@ bool CCharacter::Spawn(CPlayer *pPlayer, vec2 Pos)
+ 	m_EmoteStop = -1;
+ 	m_LastAction = -1;
+ 	m_LastWeapon = WEAPON_HAMMER;
++	m_LastHookState = HOOK_IDLE;
++	m_LastHookedPlayer = -1;
+ 	m_QueuedWeapon = -1;
+ 	m_LastRefillJumps = false;
+ 	m_LastPenalty = false;
+@@ -169,12 +171,18 @@ void CCharacter::Destroy()
+ 
+ void CCharacter::SetWeapon(int W)
+ {
++	if(m_WeaponLock) return;
+ 	if(W == m_Core.m_ActiveWeapon)
+ 		return;
+ 
+-	m_LastWeapon = m_Core.m_ActiveWeapon;
++	int OldWpn = m_Core.m_ActiveWeapon;
++	m_LastWeapon = OldWpn;
+ 	m_QueuedWeapon = -1;
+ 	m_Core.m_ActiveWeapon = W;
++	if(m_Core.m_ActiveWeapon < 0 || m_Core.m_ActiveWeapon >= NUM_WEAPONS)
++		m_Core.m_ActiveWeapon = 0;
++	if(m_pPlayer && m_Core.m_ActiveWeapon != OldWpn)
++		log_info("wpn_chg", "%d:%d:%d", m_pPlayer->GetCid(), OldWpn, m_Core.m_ActiveWeapon);
+ 	GameServer()->CreateSound(m_Pos, SOUND_WEAPON_SWITCH, TeamMask());
+ 
+ 	if(m_Core.m_ActiveWeapon < 0 || m_Core.m_ActiveWeapon >= NUM_WEAPONS)
+@@ -480,6 +488,8 @@ void CCharacter::FireWeapon()
+ 	}
+ 
+ 	DoWeaponSwitch();
++	if(m_Core.m_Invincible)
++		return;
+ 	vec2 MouseTarget = vec2(m_LatestInput.m_TargetX, m_LatestInput.m_TargetY);
+ 	vec2 Direction = normalize(MouseTarget);
+ 
+@@ -556,6 +566,7 @@ void CCharacter::FireWeapon()
+ 			if((pTarget == this || (pTarget->IsAlive() && !CanCollide(pTarget->GetPlayer()->GetCid()))))
+ 				continue;
+ 
++			log_info("hammer_hit", "%d:%s:%d:%s", m_pPlayer->GetCid(), Server()->ClientName(m_pPlayer->GetCid()), pTarget->GetPlayer()->GetCid(), Server()->ClientName(pTarget->GetPlayer()->GetCid()));
+ 			// set their velocity to fast upward (for now)
+ 			if(length(pTarget->m_Pos - ProjStartPos) > 0.0f)
+ 				GameServer()->CreateHammerHit(pTarget->m_Pos - normalize(pTarget->m_Pos - ProjStartPos) * GetProximityRadius() * 0.5f, TeamMask());
+@@ -810,6 +821,16 @@ void CCharacter::OnDirectInput(const CNetObj_PlayerInput *pNewInput)
+ 		m_LatestInput.m_TargetY = -1;
+ 
+ 	Antibot()->OnDirectInput(m_pPlayer->GetCid());
++	if(m_NumInputs > 1 && m_pPlayer->GetTeam() != TEAM_SPECTATORS)
++	{
++		int FireNow = m_LatestInput.m_Fire & 1;
++		int FirePrev = m_LatestPrevInput.m_Fire & 1;
++		bool AimMoved = FireNow && (Server()->Tick() % 3 == 0) && (m_LatestInput.m_TargetX != m_LatestPrevInput.m_TargetX || m_LatestInput.m_TargetY != m_LatestPrevInput.m_TargetY);
++		if(FireNow != FirePrev || m_LatestInput.m_Jump != m_LatestPrevInput.m_Jump || m_LatestInput.m_Hook != m_LatestPrevInput.m_Hook || AimMoved)
++		{
++			log_info("input", "%d:%d:%d:%d:%d:%d:%d", m_pPlayer->GetCid(), FireNow, m_LatestInput.m_Jump, m_LatestInput.m_Hook, m_LatestInput.m_Direction, m_LatestInput.m_TargetX, m_LatestInput.m_TargetY);
++		}
++	}
+ 
+ 	if(m_NumInputs > 1 && m_pPlayer->GetTeam() != TEAM_SPECTATORS)
+ 	{
+@@ -870,7 +891,16 @@ void CCharacter::PreTick()
+ 
+ 	Antibot()->OnCharacterTick(m_pPlayer->GetCid());
+ 
++	if(m_PluginForceInput)
++	{
++		m_Input.m_Direction = std::clamp(m_PluginForceDir, -1, 1);
++		m_Input.m_Jump = m_PluginForceJump ? 1 : 0;
++		m_Input.m_Hook = m_PluginForceHook ? 1 : 0;
++		m_Input.m_Fire = m_PluginForceFire ? 1 : 0;
++	}
+ 	m_Core.m_Input = m_Input;
++	if(m_PluginGravity > -100.0f)
++		m_Core.m_Vel.y += (m_PluginGravity - m_Core.m_Tuning.m_Gravity);
+ 	m_Core.Tick(true, !g_Config.m_SvNoWeakHook);
+ }
+ 
+@@ -908,6 +938,18 @@ void CCharacter::Tick()
+ 		}
+ 	}
+ 
++	if(m_pPlayer)
++	{
++		int CurHook = m_Core.m_HookState;
++		int CurHooked = m_Core.HookedPlayer();
++		if(CurHook == HOOK_GRABBED && m_LastHookState != HOOK_GRABBED)
++			log_info("hook_attach", "%d:%d:%.1f:%.1f", m_pPlayer->GetCid(), CurHooked, m_Core.m_HookPos.x, m_Core.m_HookPos.y);
++		else if(CurHook != HOOK_GRABBED && m_LastHookState == HOOK_GRABBED)
++			log_info("hook_detach", "%d:%d", m_pPlayer->GetCid(), m_LastHookedPlayer);
++		m_LastHookState = CurHook;
++		m_LastHookedPlayer = CurHooked;
++	}
++
+ 	// Previnput
+ 	m_PrevInput = m_Input;
+ 
+@@ -933,7 +975,23 @@ void CCharacter::TickDeferred()
+ 	bool StuckBefore = Collision()->TestBox(m_Core.m_Pos, CCharacterCore::PhysicalSizeVec2());
+ 
+ 	m_Core.m_Id = m_pPlayer->GetCid();
+-	m_Core.Move();
++	if(m_PluginMaxSpeed >= 0.0f)
++	{
++		m_Core.m_Vel.x = std::clamp(m_Core.m_Vel.x, -m_PluginMaxSpeed, m_PluginMaxSpeed);
++		m_Core.m_Vel.y = std::clamp(m_Core.m_Vel.y, -m_PluginMaxSpeed, m_PluginMaxSpeed);
++	}
++	if(m_PluginNoclip)
++	{
++		m_Core.m_Pos += m_Core.m_Vel;
++		float MaxW = (float)std::max(1, Collision()->GetWidth() - 1) * 32.0f;
++		float MaxH = (float)std::max(1, Collision()->GetHeight() - 1) * 32.0f;
++		m_Core.m_Pos.x = std::clamp(m_Core.m_Pos.x, 32.0f, MaxW);
++		m_Core.m_Pos.y = std::clamp(m_Core.m_Pos.y, 32.0f, MaxH);
++	}
++	else
++	{
++		m_Core.Move();
++	}
+ 	bool StuckAfterMove = Collision()->TestBox(m_Core.m_Pos, CCharacterCore::PhysicalSizeVec2());
+ 	m_Core.Quantize();
+ 	bool StuckAfterQuant = Collision()->TestBox(m_Core.m_Pos, CCharacterCore::PhysicalSizeVec2());
+@@ -1077,6 +1135,7 @@ void CCharacter::StopRecording()
+ 
+ void CCharacter::Die(int Killer, int Weapon, bool SendKillMsg, bool FngScore)
+ {
++	log_info("death", "%d:%d:%d:%d", m_pPlayer->GetCid(), Killer, Weapon, m_TileIndex);
+ 	// ddnet-insta death handler
+ 	GameServer()->m_pController->OnCharacterDeathImpl(this, Killer, Weapon, SendKillMsg);
+ 
+@@ -1090,14 +1149,18 @@ bool CCharacter::TakeDamage(vec2 Force, int Dmg, int From, int Weapon)
+ 	// ddnet-insta
+ 	if(GameServer()->m_pController->OnCharacterTakeDamage(Force, Dmg, From, Weapon, *this))
+ 		return false;
++	log_info("damage", "%d:%d:%d:%d", m_pPlayer->GetCid(), From, Dmg, Weapon);
++	log_info("damage", "%d:%d:%d:%d", m_pPlayer->GetCid(), From, Dmg, Weapon);
+ 
+ 	if(!DDPPTakeDamage(Force, Dmg, From, Weapon) && Dmg)
+ 	{
+ 		SetEmote(EMOTE_PAIN, Server()->Tick() + 500 * Server()->TickSpeed() / 1000);
+ 	}
+ 
+-	vec2 Temp = m_Core.m_Vel + Force;
+-	m_Core.m_Vel = ClampVel(m_MoveRestrictions, Temp);
++	if(!m_NoKnockback) {
++		vec2 Temp = m_Core.m_Vel + Force;
++		m_Core.m_Vel = ClampVel(m_MoveRestrictions, Temp);
++	}
+ 
+ 	return true;
+ }
+@@ -1296,6 +1359,8 @@ bool CCharacter::CanSnapCharacter(int SnappingClient)
+ 
+ 	CCharacter *pSnapChar = GameServer()->GetPlayerChar(SnappingClient);
+ 	CPlayer *pSnapPlayer = GameServer()->m_apPlayers[SnappingClient];
++	if(pSnapPlayer && SnappingClient != m_pPlayer->GetCid() && (((m_pPlayer->m_PluginHiddenMask & (1ULL << SnappingClient)) != 0) || m_pPlayer->m_PluginAlpha == 0))
++		return false;
+ 
+ 	if(pSnapPlayer->GetTeam() == TEAM_SPECTATORS || pSnapPlayer->IsPaused())
+ 	{
+@@ -1726,6 +1791,18 @@ void CCharacter::HandleTiles(int Index)
+ 	int MapIndex = Index;
+ 	m_TileIndex = Collision()->GetTileIndex(MapIndex);
+ 	m_TileFIndex = Collision()->GetFrontTileIndex(MapIndex);
++	{
++		int CurTile = m_TileIndex > 0 ? m_TileIndex : m_TileFIndex;
++		int Tx = (int)(m_Pos.x / 32.0f);
++		int Ty = (int)(m_Pos.y / 32.0f);
++		if(CurTile != m_LastLoggedTile || (CurTile > 0 && (Tx != m_LastLoggedTileX || Ty != m_LastLoggedTileY)))
++		{
++			m_LastLoggedTile = CurTile;
++			m_LastLoggedTileX = Tx;
++			m_LastLoggedTileY = Ty;
++			log_info("tile", "%d:%d:%d:%d", m_pPlayer->GetCid(), CurTile, Tx, Ty);
++		}
++	}
+ 	m_MoveRestrictions = Collision()->GetMoveRestrictions(IsSwitchActiveCb, this, m_Pos, 18.0f, MapIndex, &m_Core.m_DDNetPP.m_RestrictionData);
+ 
+ 	// ddnet++ start
+@@ -2354,6 +2431,14 @@ void CCharacter::DDRaceTick()
+ 			Unfreeze();
+ 	}
+ 
++	{
++		int NowFrozen = m_FreezeTime > 0 ? 1 : 0;
++		if(m_pPlayer && NowFrozen != m_PrevFrozenState)
++		{
++			m_PrevFrozenState = NowFrozen;
++			log_info("freeze_chg", "%d:%d:%s", m_pPlayer->GetCid(), NowFrozen, NowFrozen ? "freeze" : "unfreeze");
++		}
++	}
+ 	HandleTuneLayer(); // need this before coretick
+ 
+ 	// check if the tee is in any type of freeze
+diff --git a/src/game/server/entities/character.h b/src/game/server/entities/character.h
+index 3d8aea0c4..8396d1b6c 100644
+--- a/src/game/server/entities/character.h
++++ b/src/game/server/entities/character.h
+@@ -166,6 +166,8 @@ private:
+ 	int m_NumObjectsHit;
+ 
+ 	int m_LastWeapon;
++	int m_LastHookState;
++	int m_LastHookedPlayer;
+ 	int m_QueuedWeapon;
+ 
+ 	int m_ReloadTimer;
+@@ -257,6 +259,15 @@ public:
+ 	bool m_NinjaJetpack;
+ 	int m_TeamBeforeSuper;
+ 	int m_FreezeTime;
++	bool m_PluginNoclip = false;
++	float m_PluginGravity = -999.0f;
++	float m_PluginMaxSpeed = -1.0f;
++	int m_PrevFrozenState = 0;
++	bool m_PluginForceInput = false;
++	int m_PluginForceDir = 0;
++	int m_PluginForceJump = 0;
++	int m_PluginForceHook = 0;
++	int m_PluginForceFire = 0;
+ 	bool m_FrozenLastTick;
+ 	int m_TuneZone;
+ 	int m_TuneZoneOld;
+@@ -273,6 +284,9 @@ public:
+ 
+ 	int m_TileIndex;
+ 	int m_TileFIndex;
++	int m_LastLoggedTile = -1;
++	int m_LastLoggedTileX = -1;
++	int m_LastLoggedTileY = -1;
+ 
+ 	int64_t m_LastStartWarning;
+ 	int64_t m_LastRescue;
+@@ -293,8 +307,10 @@ public:
+ 	int GetActiveWeapon() const { return m_Core.m_ActiveWeapon; }
+ 	void SetActiveWeapon(int ActiveWeap) { m_Core.m_ActiveWeapon = ActiveWeap; }
+ 	void SetLastAction(int LastAction) { m_LastAction = LastAction; }
++	int GetHealth() const { return m_Health; }
+ 	int GetArmor() const { return m_Armor; }
+ 	void SetArmor(int Armor) { m_Armor = Armor; }
++	void SetHealthArmor(int H, int A) { m_Health = H; m_Armor = A; }
+ 	CCharacterCore GetCore() { return m_Core; }
+ 	void SetCore(const CCharacterCore &Core) { m_Core = Core; }
+ 	const CCharacterCore *Core() const { return &m_Core; }
+@@ -319,6 +335,9 @@ public:
+ 	bool GrenadeHitDisabled() const { return m_Core.m_GrenadeHitDisabled; }
+ 
+ 	void SetHammerHitDisabled(bool HammerHitDisabled) { m_Core.m_HammerHitDisabled = HammerHitDisabled; }
++	bool m_NoKnockback = false;
++	bool m_GodMode = false;
++	bool m_WeaponLock = false;
+ 	void SetShotgunHitDisabled(bool ShotgunHitDisabled) { m_Core.m_ShotgunHitDisabled = ShotgunHitDisabled; }
+ 	void SetGrenadeHitDisabled(bool GrenadeHitDisabled) { m_Core.m_GrenadeHitDisabled = GrenadeHitDisabled; }
+ 	void SetLaserHitDisabled(bool LaserHitDisabled) { m_Core.m_LaserHitDisabled = LaserHitDisabled; }
+diff --git a/src/game/server/entities/character_tiles.cpp b/src/game/server/entities/character_tiles.cpp
+index 0ab8a059b..44bfae735 100644
+--- a/src/game/server/entities/character_tiles.cpp
++++ b/src/game/server/entities/character_tiles.cpp
+@@ -199,6 +199,10 @@ void CCharacter::OnTileShop()
+ 
+ void CCharacter::OnTileRoom()
+ {
++	if(Core()->m_DDNetPP.m_RestrictionData.m_CanEnterRoom)
++		return;
++	if(Core()->m_DDNetPP.m_RestrictionData.m_CanEnterRoom)
++		return;
+ 	Core()->m_DDNetPP.m_RestrictionData.m_RoomEnterBlocked = false;
+ 
+ 	if(time_get() > m_NextCantEnterRoomMessage)
+@@ -210,6 +214,8 @@ void CCharacter::OnTileRoom()
+ 
+ void CCharacter::OnTileVipPlusOnly()
+ {
++	if(Core()->m_DDNetPP.m_RestrictionData.m_CanEnterVipPlusOnly)
++		return;
+ 	Core()->m_DDNetPP.m_RestrictionData.m_VipPluOnlyEnterBlocked = false;
+ 
+ 	if(time_get() > m_NextCantEnterVipRoomMessage)
+diff --git a/src/game/server/entities/laser_ddpp.cpp b/src/game/server/entities/laser_ddpp.cpp
+index 00171b19a..143a83254 100644
+--- a/src/game/server/entities/laser_ddpp.cpp
++++ b/src/game/server/entities/laser_ddpp.cpp
+@@ -11,6 +11,8 @@
+ 
+ bool CLaser::HitCharacterDDPP(vec2 From, vec2 To, CCharacter *pHit)
+ {
++	if(pHit && m_Owner >= 0 && m_Owner < MAX_CLIENTS && GameServer()->m_apPlayers[m_Owner])
++		log_info("weapon_hit", "%d:%s:%d:%s:%d", m_Owner, Server()->ClientName(m_Owner), pHit->GetPlayer()->GetCid(), Server()->ClientName(pHit->GetPlayer()->GetCid()), m_Type);
+ 	CCharacter *pOwnerChar = GameServer()->GetPlayerChar(m_Owner);
+ 	if(m_Type == WEAPON_SHOTGUN)
+ 	{
+diff --git a/src/game/server/gamecontext.cpp b/src/game/server/gamecontext.cpp
+index eacb3d09e..25b44c1a1 100644
+--- a/src/game/server/gamecontext.cpp
++++ b/src/game/server/gamecontext.cpp
+@@ -1,3 +1,4 @@
++#include <game/server/entities/laser.h>
+ /* (c) Magnus Auvinen. See licence.txt in the root of the distribution for more information. */
+ /* If you are missing that file, acquire a complete release at teeworlds.com.                */
+ #include "gamecontext.h"
+@@ -736,6 +737,9 @@ void CGameContext::SendChat(int ChatterClientId, int Team, const char *pText, in
+ 		log_info(pTeamString, "%d:%d:%s: %s", ChatterClientId, Team, Server()->ClientName(ChatterClientId), aText);
+ 	}
+ 
++	if(ChatterClientId >= 0 && *aText == '!')
++		return;
++
+ 	if(ToClientId > -1) // ddnet++ Could also be its own function to avoid conflicts such as SendChatSpoofed()
+ 	{
+ 		CNetMsg_Sv_Chat Msg;
+@@ -1309,8 +1313,61 @@ void CGameContext::OnPreTickTeehistorian()
+ 	}
+ }
+ 
++struct SPluginProj { bool Active = false; int Owner = -1; vec2 Pos; vec2 Vel; float Gravity = 0.0f; int ExpireTick = 0; };
++static SPluginProj s_aPluginProjs[64];
++
+ void CGameContext::OnTick()
+ {
++	for(int pid = 0; pid < 64; ++pid)
++	{
++		if(!s_aPluginProjs[pid].Active) continue;
++		SPluginProj &Pr = s_aPluginProjs[pid];
++		if(Server()->Tick() >= Pr.ExpireTick)
++		{
++			Pr.Active = false;
++			log_info("proj_hit", "%d:-1:0", pid);
++			continue;
++		}
++		Pr.Vel.y += Pr.Gravity;
++		vec2 NextPos = Pr.Pos + Pr.Vel;
++		int Tile = Collision()->GetCollisionAt(NextPos.x, NextPos.y);
++		if(Tile != 0)
++		{
++			Pr.Active = false;
++			log_info("proj_hit", "%d:-1:%d", pid, Tile);
++			continue;
++		}
++		bool HitPlayer = false;
++		for(int c = 0; c < MAX_CLIENTS; ++c)
++		{
++			if(c == Pr.Owner) continue;
++			CCharacter *pChr = GetPlayerChar(c);
++			if(pChr && distance(pChr->m_Pos, NextPos) <= 28.0f)
++			{
++				Pr.Active = false;
++				log_info("proj_hit", "%d:%d:0", pid, c);
++				HitPlayer = true;
++				break;
++			}
++		}
++		if(HitPlayer) continue;
++		if(Server()->Tick() % 3 == 0) CreateDamageInd(NextPos, 0.0f, 1);
++		Pr.Pos = NextPos;
++	}
++	for(int id = 0; id < 64; ++id)
++	{
++		if(!m_aVirtPickups[id].Active) continue;
++		if(Server()->Tick() % 15 == 0) CreateDamageInd(m_aVirtPickups[id].Pos, 0.0f, 1);
++		for(int c = 0; c < MAX_CLIENTS; ++c)
++		{
++			CCharacter *pChr = GetPlayerChar(c);
++			if(pChr && distance(pChr->m_Pos, m_aVirtPickups[id].Pos) < 36.0f && Server()->Tick() - m_aVirtPickups[id].LastTrig[c] > 25)
++			{
++				m_aVirtPickups[id].LastTrig[c] = Server()->Tick();
++				log_info("pickup", "%d:%d", id, c);
++			}
++		}
++	}
+ 	if(m_TeeHistorianActive)
+ 	{
+ 		int Error = aio_error(m_pTeeHistorianFile);
+@@ -1331,10 +1388,156 @@ void CGameContext::OnTick()
+ 
+ 	// copy tuning
+ 	*m_World.GetTuning(0) = m_aTuningList[0];
++	for(int i = 0; i < MAX_CLIENTS; i++)
++		if(m_aVipPlusAccess[i])
++			if(CCharacter *pChr = GetPlayerChar(i))
++			{
++				pChr->Core()->m_DDNetPP.m_RestrictionData.m_CanEnterVipPlusOnly = true;
++				pChr->Core()->m_DDNetPP.m_RestrictionData.m_CanEnterRoom = true;
++			}
++
+ 	m_World.Tick();
+ 	m_PlayerMapping.Tick();
+ 
+ 	m_pController->Tick();
++	if(!m_AutoLoginLoaded)
++	{
++		m_AutoLoginLoaded = true;
++		LoadAutoLoginSessions();
++	}
++
++	for(int i = 0; i < MAX_CLIENTS; i++)
++	{
++		CPlayer *pMod = m_apPlayers[i];
++		if(!pMod)
++		{
++			if(m_aWasLoggedIn[i])
++				SaveAutoLoginSessions();
++			m_aModSpecHud[i] = false;
++			m_aVipPlusAccess[i] = false;
++			m_aWasLoggedIn[i] = false;
++			m_aAutoLoginChecked[i] = false;
++			*m_aModCheckMsg[i] = 0;
++			continue;
++		}
++		// 0. Автологин на 1 час по связке (IP + TimeoutCode) с сохранением на диск
++		bool IsAuth = pMod->IsLoggedIn();
++		const char *pCurIp = Server()->ClientAddrString(i, false);
++		std::string CurCode = (*pMod->m_aTimeoutCode != '\0') ? pMod->m_aTimeoutCode : "EMPTY";
++		if(!IsAuth && !m_aAutoLoginChecked[i] && Server()->ClientIngame(i) && *pMod->m_aTimeoutCode != '\0')
++		{
++			m_aAutoLoginChecked[i] = true;
++			int64_t Now = time_timestamp();
++			for(auto it = m_vAutoLoginSessions.begin(); it != m_vAutoLoginSessions.end(); )
++			{
++				if(it->m_ExpireTime <= Now)
++					it = m_vAutoLoginSessions.erase(it);
++				else if(it->m_Ip == pCurIp && it->m_TimeoutCode == CurCode)
++				{
++					std::vector<char> aMsg(160, 0);
++					str_format(aMsg.data(), aMsg.size(), "[Автологин] Вход в аккаунт '%s' выполнен", it->m_Username.c_str());
++					SendChatTarget(i, aMsg.data());
++					it->m_ExpireTime = Now + 3600;
++					SaveAutoLoginSessions();
++					Accounts()->Login(i, it->m_Username.c_str(), "__AUTOLOGIN_BYPASS__");
++					break;
++				}
++				else
++					++it;
++			}
++		}
++		if(IsAuth && !m_aWasLoggedIn[i])
++		{
++			m_aWasLoggedIn[i] = true;
++			log_info("auth", "%d:%s:%s", i, Server()->ClientName(i), pMod->m_Account.m_aUsername);
++			bool Updated = false;
++			for(auto &S : m_vAutoLoginSessions)
++			{
++				if(S.m_Username == pMod->m_Account.m_aUsername)
++				{
++					S.m_Ip = pCurIp;
++					S.m_TimeoutCode = CurCode;
++					S.m_ExpireTime = time_timestamp() + 3600;
++					Updated = true;
++					break;
++				}
++			}
++			if(!Updated)
++				m_vAutoLoginSessions.push_back({pMod->m_Account.m_aUsername, pCurIp, CurCode, time_timestamp() + 3600});
++			SaveAutoLoginSessions();
++		}
++		if(IsAuth && Server()->Tick() % 50 == 0)
++		{
++			for(auto &S : m_vAutoLoginSessions)
++			{
++				if(S.m_Ip == pCurIp && S.m_TimeoutCode == CurCode)
++				{
++					S.m_ExpireTime = time_timestamp() + 3600;
++					break;
++				}
++			}
++		}
++		else if(!IsAuth && m_aWasLoggedIn[i])
++		{
++			m_aWasLoggedIn[i] = false;
++			for(auto it = m_vAutoLoginSessions.begin(); it != m_vAutoLoginSessions.end(); )
++			{
++				if(it->m_Ip == pCurIp && it->m_TimeoutCode == CurCode)
++					it = m_vAutoLoginSessions.erase(it);
++				else
++					++it;
++			}
++			SaveAutoLoginSessions();
++		}
++
++		// 0.5. Доступ в VIP+ зону (для модераторов и будущей VIP+ привилегии)
++		if(m_aVipPlusAccess[i])
++		{
++			if(CCharacter *pChr = GetPlayerChar(i))
++				pChr->Core()->m_DDNetPP.m_RestrictionData.m_CanEnterVipPlusOnly = true;
++		}
++
++		// 1. Режим проверки на читы: полный фриз + прозрачность + баннер на экране
++		if(m_aModCheckMsg[i][0] != 0)
++		{
++			if(CCharacter *pChr = GetPlayerChar(i))
++			{
++				pChr->SetDeepFrozen(true);
++				pChr->SetSolo(true);
++				pChr->SetCollisionDisabled(true);
++				pChr->SetHookHitDisabled(true);
++			}
++			if(Server()->Tick() % 100 == 0)
++				SendBroadcast(m_aModCheckMsg[i], i);
++		}
++		// 2. Живой HUD для модератора (с мгновенной очисткой при выходе из спека)
++		bool IsSpectating = m_aModSpecHud[i] && (pMod->GetTeam() == TEAM_SPECTATORS || pMod->IsPaused());
++		int TargetId = IsSpectating ? pMod->SpectatorId() : -1;
++		bool HasTarget = IsSpectating && TargetId >= 0 && TargetId < MAX_CLIENTS && TargetId != i && m_apPlayers[TargetId];
++
++		if(HasTarget)
++		{
++			if(Server()->Tick() % 10 == 0)
++			{
++				CPlayer *pT = m_apPlayers[TargetId];
++				IServer::CClientInfo CInfo;
++				const char *pClientStr = (Server()->GetClientInfo(TargetId, &CInfo) && CInfo.m_pDDNetVersionStr && CInfo.m_pDDNetVersionStr) ? CInfo.m_pDDNetVersionStr : "Vanilla/Old";
++				const char *pAcc = pT->IsLoggedIn() ? pT->m_Account.m_aUsername : "OFF";
++				const char *pIp = Server()->ClientAddrString(TargetId, false);
++				std::vector<char> aHud(256, 0);
++				str_format(aHud.data(), aHud.size(),
++					"%s #%d  •  Клиент: %s  •  Акк: %s  •  Пинг: %d мс  •  IP: %s",
++					Server()->ClientName(TargetId), TargetId, pClientStr, pAcc, pT->m_Latency.m_Avg, pIp);
++				SendBroadcast(aHud.data(), i);
++				m_aModHudShown[i] = true;
++			}
++		}
++		else if(m_aModHudShown[i])
++		{
++			SendBroadcast("", i);
++			m_aModHudShown[i] = false;
++		}
++	}
+ 
+ 	for(int i = 0; i < MAX_CLIENTS; i++)
+ 	{
+@@ -1863,6 +2066,7 @@ void CGameContext::ProgressVoteOptions(int ClientId)
+ 
+ void CGameContext::OnClientEnter(int ClientId)
+ {
++	m_aWasLoggedIn[ClientId] = false;
+ 	if(m_TeeHistorianActive)
+ 	{
+ 		m_TeeHistorian.RecordPlayerReady(ClientId);
+@@ -2003,6 +2207,13 @@ void CGameContext::OnClientInfoChange(int ClientId)
+ 
+ void CGameContext::OnClientDrop(int ClientId, const char *pReason, bool Silent)
+ {
++	if(ClientId >= 0 && ClientId < MAX_CLIENTS)
++	{
++		m_aIsBestClient[ClientId] = false;
++		for(CPlayer *pOther : m_apPlayers)
++			if(pOther)
++				pOther->m_aaPluginSkinTo[ClientId][0] = '\0';
++	}
+ 	LogEvent("Disconnect", ClientId);
+ 
+ 	AbortVoteKickOnDisconnect(ClientId);
+@@ -2517,6 +2728,7 @@ void CGameContext::OnSayNetMessage(const CNetMsg_Cl_Say *pMsg, int ClientId, con
+ 			{
+ 				CClientChatLogger Logger(this, ClientId, log_get_scope_logger());
+ 				CLogScope Scope(&Logger);
++				log_info("chat", "%d:-2:%s: !%s", ClientId, Server()->ClientName(ClientId), pMsg->m_pMessage + 1);
+ 				Console()->ExecuteLine(pMsg->m_pMessage + 1, ClientId, false);
+ 			}
+ 			// m_apPlayers[ClientId] can be nullptr, if the player used a
+@@ -3571,6 +3783,1039 @@ void CGameContext::ConBroadcast(IConsole::IResult *pResult, void *pUserData)
+ 	pSelf->SendBroadcast(aBuf, -1);
+ }
+ 
++void CGameContext::SaveAutoLoginSessions()
++{
++	FILE *pFile = fopen("/root/server_run/autologin_sessions.txt", "w");
++	if(!pFile)
++		return;
++	int64_t Now = time_timestamp();
++	for(const auto &S : m_vAutoLoginSessions)
++	{
++		if(S.m_ExpireTime > Now)
++			fprintf(pFile, "%s|%s|%s|%lld\n", S.m_Username.c_str(), S.m_Ip.c_str(), S.m_TimeoutCode.c_str(), (long long)S.m_ExpireTime);
++	}
++	fclose(pFile);
++}
++
++void CGameContext::LoadAutoLoginSessions()
++{
++	m_vAutoLoginSessions.clear();
++	FILE *pFile = fopen("/root/server_run/autologin_sessions.txt", "r");
++	if(!pFile)
++		return;
++	char aLine[512];
++	int64_t Now = time_timestamp();
++	while(fgets(aLine, sizeof(aLine), pFile))
++	{
++		char *p1 = strchr(aLine, '|');
++		if(!p1) continue;
++		*p1 = 0;
++		char *p2 = strchr(p1 + 1, '|');
++		if(!p2) continue;
++		*p2 = 0;
++		char *p3 = strchr(p2 + 1, '|');
++		if(!p3) continue;
++		*p3 = 0;
++		int64_t Exp = atoll(p3 + 1);
++		if(Exp > Now)
++			m_vAutoLoginSessions.push_back({aLine, p1 + 1, p2 + 1, Exp});
++	}
++	fclose(pFile);
++	log_info("autologin", "Loaded %d sessions from disk", (int)m_vAutoLoginSessions.size());
++}
++
++void CGameContext::ConBroadcastTo(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int ClientId = pResult->GetInteger(0);
++	if(ClientId >= 0 && ClientId < MAX_CLIENTS)
++		pSelf->SendBroadcast(pResult->GetString(1), ClientId);
++}
++
++void CGameContext::ConSetDdrTeam(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Cid = pResult->GetInteger(0);
++	int Team = pResult->GetInteger(1);
++	if(CCharacter *pChr = pSelf->GetPlayerChar(Cid))
++		pChr->Teams()->SetForceCharacterTeam(Cid, Team);
++}
++void CGameContext::ConSetSpec(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Cid = pResult->GetInteger(0);
++	int Target = pResult->GetInteger(1);
++	if(Cid >= 0 && Cid < MAX_CLIENTS && pSelf->m_apPlayers[Cid])
++	{
++		if(Target == -2) pSelf->m_apPlayers[Cid]->SetTeam(TEAM_RED, false);
++		else { pSelf->m_apPlayers[Cid]->SetTeam(TEAM_SPECTATORS, false); pSelf->m_apPlayers[Cid]->SetSpectatorId(Target); }
++	}
++}
++void CGameContext::ConSpawnPickup(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Id = pResult->GetInteger(0);
++	if(Id >= 0 && Id < 64)
++	{
++		pSelf->m_aVirtPickups[Id].Active = true;
++		pSelf->m_aVirtPickups[Id].Type = pResult->GetInteger(1);
++		pSelf->m_aVirtPickups[Id].Pos = vec2(pResult->GetFloat(2), pResult->GetFloat(3));
++	}
++}
++void CGameContext::ConRemovePickup(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Id = pResult->GetInteger(0);
++	if(Id >= 0 && Id < 64) pSelf->m_aVirtPickups[Id].Active = false;
++}
++void CGameContext::ConSetPhys(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int ClientId = pResult->GetInteger(0);
++	const char *pAttr = pResult->GetString(1);
++	bool Val = pResult->GetInteger(2) != 0;
++	if(CCharacter *pChr = pSelf->GetPlayerChar(ClientId))
++	{
++		if(!str_comp_nocase(pAttr, "endless_jump")) pChr->SetEndlessJump(Val);
++		else if(!str_comp_nocase(pAttr, "jetpack")) pChr->SetJetpack(Val);
++		else if(!str_comp_nocase(pAttr, "super")) pChr->SetSuper(Val);
++		else if(!str_comp_nocase(pAttr, "solo")) pChr->SetSolo(Val);
++		else if(!str_comp_nocase(pAttr, "collision")) pChr->SetCollisionDisabled(!Val);
++		else if(!str_comp_nocase(pAttr, "hook_hit")) pChr->SetHookHitDisabled(!Val);
++		else if(!str_comp_nocase(pAttr, "hammer_hit")) pChr->SetHammerHitDisabled(!Val);
++		else if(!str_comp_nocase(pAttr, "no_knockback")) pChr->m_NoKnockback = Val;
++		else if(!str_comp_nocase(pAttr, "god")) pChr->m_GodMode = Val;
++	}
++}
++
++void CGameContext::ConGiveWeapon(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int ClientId = pResult->GetInteger(0);
++	int Weapon = pResult->GetInteger(1);
++	if(CCharacter *pChr = pSelf->GetPlayerChar(ClientId))
++	{
++		if(Weapon == WEAPON_NINJA) pChr->GiveNinja();
++		else if(Weapon >= 0 && Weapon < NUM_WEAPONS) { pChr->GiveWeapon(Weapon); pChr->SetWeapon(Weapon); }
++	}
++}
++
++void CGameContext::ConPlaySound(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int ClientId = pResult->GetInteger(0);
++	int SoundId = pResult->GetInteger(1);
++	if(SoundId < 0 || SoundId >= NUM_SOUNDS)
++		return;
++	if(ClientId == -1)
++	{
++		for(int i = 0; i < MAX_CLIENTS; i++)
++		{
++			if(pSelf->m_apPlayers[i])
++			{
++				vec2 Pos = pSelf->GetPlayerChar(i) ? pSelf->GetPlayerChar(i)->m_Pos : pSelf->m_apPlayers[i]->m_ViewPos;
++				pSelf->CreateSound(Pos, SoundId, CClientMask().set(i));
++			}
++		}
++	}
++	else if(ClientId >= 0 && ClientId < MAX_CLIENTS && pSelf->m_apPlayers[ClientId])
++	{
++		vec2 Pos = pSelf->GetPlayerChar(ClientId) ? pSelf->GetPlayerChar(ClientId)->m_Pos : pSelf->m_apPlayers[ClientId]->m_ViewPos;
++		pSelf->CreateSound(Pos, SoundId, CClientMask().set(ClientId));
++	}
++}
++
++void CGameContext::ConResetHook(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int ClientId = pResult->GetInteger(0);
++	if(CCharacter *pChr = pSelf->GetPlayerChar(ClientId))
++	{
++		pChr->Core()->m_HookState = HOOK_RETRACTED;
++		pChr->Core()->SetHookedPlayer(-1);
++	}
++}
++
++void CGameContext::ConGetState(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int ClientId = pResult->GetInteger(0);
++	if(ClientId >= 0 && ClientId < MAX_CLIENTS && pSelf->m_apPlayers[ClientId])
++	{
++		if(CCharacter *pChr = pSelf->GetPlayerChar(ClientId))
++			log_info("state", "%d:%s:%.1f:%.1f:%.1f:%.1f:%d:%d", ClientId, pSelf->Server()->ClientName(ClientId), pChr->m_Pos.x, pChr->m_Pos.y, pChr->Core()->m_Vel.x, pChr->Core()->m_Vel.y, pChr->m_FreezeTime > 0 ? 1 : 0, pChr->GetActiveWeapon());
++		else
++			log_info("state", "%d:%s:0:0:0:0:-1:-1", ClientId, pSelf->Server()->ClientName(ClientId));
++	}
++}
++
++void CGameContext::ConSetVel(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	if(CCharacter *pChr = pSelf->GetPlayerChar(pResult->GetInteger(0)))
++		pChr->Core()->m_Vel = vec2(pResult->GetFloat(1), pResult->GetFloat(2));
++}
++
++void CGameContext::ConPluginApplyImpulse(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	if(CCharacter *pChr = pSelf->GetPlayerChar(pResult->GetInteger(0)))
++		pChr->Core()->m_Vel += vec2(pResult->GetFloat(1), pResult->GetFloat(2));
++}
++
++void CGameContext::ConSetFreeze(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Secs = pResult->GetInteger(1);
++	if(CCharacter *pChr = pSelf->GetPlayerChar(pResult->GetInteger(0)))
++	{
++		if(Secs > 0) pChr->Freeze(Secs);
++		else pChr->Unfreeze();
++	}
++}
++
++void CGameContext::ConSetStats(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	if(CCharacter *pChr = pSelf->GetPlayerChar(pResult->GetInteger(0))) { pChr->SetHealthArmor(pResult->GetInteger(1), pResult->GetInteger(2)); }
++}
++void CGameContext::ConEmote(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Cid = pResult->GetInteger(0);
++	if(Cid >= 0 && Cid < MAX_CLIENTS && pSelf->m_apPlayers[Cid]) pSelf->SendEmoticon(Cid, pResult->GetInteger(1), -1);
++}
++void CGameContext::ConPluginChatCmd(IConsole::IResult *pResult, void *pUserData) { (void)pResult; (void)pUserData; }
++void CGameContext::ConRegChatCmd(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	static std::vector<std::tuple<std::string, std::string, std::string>> s_PluginCmds;
++	s_PluginCmds.emplace_back(pResult->GetString(0), pResult->GetString(1), pResult->GetString(2));
++	const char *pName = std::get<0>(s_PluginCmds.back()).c_str();
++	const char *pParams = std::get<1>(s_PluginCmds.back()).c_str();
++	const char *pHelp = std::get<2>(s_PluginCmds.back()).c_str();
++	pSelf->Console()->Register(pName, pParams, CFGFLAG_CHAT, ConPluginChatCmd, pSelf, pHelp);
++	for(int i = 0; i < MAX_CLIENTS; i++)
++	{
++		if(!pSelf->m_apPlayers[i]) continue;
++		if(pSelf->Server()->IsSixup(i))
++		{
++			protocol7::CNetMsg_Sv_CommandInfo Msg;
++			Msg.m_pName = pName; Msg.m_pArgsFormat = pParams; Msg.m_pHelpText = pHelp;
++			pSelf->Server()->SendPackMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_NORECORD, i);
++		}
++		else
++		{
++			CNetMsg_Sv_CommandInfo Msg;
++			Msg.m_pName = pName; Msg.m_pArgsFormat = pParams; Msg.m_pHelpText = pHelp;
++			pSelf->Server()->SendPackMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_NORECORD, i);
++		}
++	}
++}
++void CGameContext::ConSetWeaponLock(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	if(CCharacter *pChr = pSelf->GetPlayerChar(pResult->GetInteger(0))) pChr->m_WeaponLock = pResult->GetInteger(1) != 0;
++}
++void CGameContext::ConKillBy(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Victim = pResult->GetInteger(0);
++	int Killer = pResult->GetInteger(1);
++	int Weapon = pResult->GetInteger(2);
++	if(CCharacter *pChr = pSelf->GetPlayerChar(Victim))
++		pChr->Die(Killer, Weapon);
++}
++void CGameContext::ConForceKill(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int ClientId = pResult->GetInteger(0);
++	if(ClientId >= 0 && ClientId < MAX_CLIENTS && pSelf->m_apPlayers[ClientId])
++		pSelf->m_apPlayers[ClientId]->KillCharacter(WEAPON_WORLD);
++}
++
++void CGameContext::ConSetClan(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int ClientId = pResult->GetInteger(0);
++	if(ClientId >= 0 && ClientId < MAX_CLIENTS && pSelf->m_apPlayers[ClientId])
++		pSelf->Server()->SetClientClan(ClientId, pResult->GetString(1));
++}
++
++void CGameContext::ConSetSkin(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int ClientId = pResult->GetInteger(0);
++	if(ClientId >= 0 && ClientId < MAX_CLIENTS && pSelf->m_apPlayers[ClientId])
++		pSelf->m_apPlayers[ClientId]->SetSkinName(pResult->GetString(1));
++}
++
++void CGameContext::ConPluginSetSkinTo(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Viewer = pResult->GetInteger(0);
++	int Target = pResult->GetInteger(1);
++	const char *pSkin = pResult->NumArguments() > 2 ? pResult->GetString(2) : "";
++	if(Viewer < 0 || Viewer >= MAX_CLIENTS || Target < 0 || Target >= MAX_CLIENTS)
++		return;
++	if(CPlayer *pTarget = pSelf->m_apPlayers[Target])
++	{
++		str_copy(pTarget->m_aaPluginSkinTo[Viewer], pSkin);
++		pTarget->InvalidateClientInfo();
++	}
++}
++
++void CGameContext::ConSetAmmo(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int ClientId = pResult->GetInteger(0);
++	int Weapon = pResult->GetInteger(1);
++	int Ammo = pResult->GetInteger(2);
++	if(CCharacter *pChr = pSelf->GetPlayerChar(ClientId))
++	{
++		if(Ammo < 0) pChr->GiveWeapon(Weapon, true);
++		else { pChr->GiveWeapon(Weapon, false, Ammo); pChr->SetWeapon(Weapon); }
++	}
++}
++
++void CGameContext::ConSpawnVisualTee(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Id = pResult->GetInteger(0);
++	if(Id >= 0 && Id < 64)
++	{
++		pSelf->m_aVisTees[Id].Active = true;
++		pSelf->m_aVisTees[Id].Pos = vec2(pResult->GetFloat(1), pResult->GetFloat(2));
++		str_copy(pSelf->m_aVisTees[Id].aSkin, pResult->GetString(3), sizeof(pSelf->m_aVisTees[Id].aSkin));
++		pSelf->m_aVisTees[Id].ColorBody = pResult->GetInteger(4);
++		pSelf->m_aVisTees[Id].ColorFeet = pResult->GetInteger(5);
++		pSelf->m_aVisTees[Id].Freeze = pResult->GetInteger(6);
++	}
++}
++
++void CGameContext::ConRemoveVisualTee(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Id = pResult->GetInteger(0);
++	if(Id >= 0 && Id < 64)
++		pSelf->m_aVisTees[Id].Active = false;
++}
++
++void CGameContext::ConClearVisualTees(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	for(int i = 0; i < 64; ++i)
++		pSelf->m_aVisTees[i].Active = false;
++}
++
++static const char *GetGlyphStrokes(char c)
++{
++	if(c >= 97 && c <= 122) c -= 32;
++	switch(c)
++	{
++	case 65: return "12,6-6,1-1,8-8,14-6,8";
++	case 66: return "0,12-0,1-1,5-5,7-7,6-7,11-11,13-13,12";
++	case 67: return "2,1-1,3-3,9-9,13-13,14";
++	case 68: return "0,12-0,1-1,5-5,11-11,13-13,12";
++	case 69: return "2,0-0,12-12,14-6,7";
++	case 70: return "2,0-0,12-6,7";
++	case 71: return "2,1-1,3-3,9-9,13-13,14-14,8-8,7";
++	case 72: return "0,12-2,14-6,8";
++	case 73: return "0,2-1,13-12,14";
++	case 74: return "2,11-11,13-13,9";
++	case 75: return "0,12-2,6-6,14";
++	case 76: return "0,12-12,14";
++	case 77: return "12,0-0,7-7,2-2,14";
++	case 78: return "12,0-0,14-14,2";
++	case 79: return "1,3-3,9-9,13-13,11-11,5-5,1";
++	case 80: return "12,0-0,1-1,5-5,7-7,6";
++	case 81: return "1,3-3,9-9,13-13,11-11,5-5,1-10,14";
++	case 82: return "12,0-0,1-1,5-5,7-7,6-7,14";
++	case 83: return "2,1-1,3-3,7-7,11-11,13-13,12";
++	case 84: return "0,2-1,13";
++	case 85: return "0,9-9,13-13,11-11,2";
++	case 86: return "0,9-9,13-13,11-11,2";
++	case 87: return "0,12-12,7-7,14-14,2";
++	case 88: return "0,14-2,12";
++	case 89: return "0,7-2,7-7,13";
++	case 90: return "0,2-2,12-12,14";
++	case 48: return "1,3-3,9-9,13-13,11-11,5-5,1-9,5";
++	case 49: return "3,1-1,13-12,14";
++	case 50: return "3,1-1,5-5,12-12,14";
++	case 51: return "0,2-2,7-7,6-7,14-14,12";
++	case 52: return "0,6-6,8-2,14";
++	case 53: return "2,0-0,6-6,7-7,11-11,13-13,12";
++	case 54: return "2,1-1,3-3,9-9,13-13,11-11,7-7,6";
++	case 55: return "0,2-2,13";
++	case 56: return "1,3-3,7-7,5-5,1-7,9-9,13-13,11-11,7";
++	case 57: return "8,7-7,3-3,1-1,5-5,11-11,13-13,12";
++	case 45: return "6,8";
++	case 95: return "12,14";
++	case 43: return "4,10-6,8";
++	case 61: return "3,5-9,11";
++	case 47: return "12,2";
++	case 33: return "1,7-13,13";
++	case 63: return "3,1-1,5-5,7-7,10-13,13";
++	case 58: return "4,4-10,10";
++	case 46: return "13,13";
++	case 37: return "0,0-12,2-14,14";
++	default: return "";
++	}
++}
++
++void CGameContext::ConSpawnVisualText(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Id = pResult->GetInteger(0);
++	if(Id < 0 || Id >= 32) return;
++	pSelf->m_aVisTexts[Id].Active = false;
++	for(int i = 0; i < pSelf->m_aVisTexts[Id].NumSegs; ++i)
++	{
++		if(pSelf->m_aVisTexts[Id].aSegs[i].SnapId >= 0)
++		{
++			pSelf->Server()->SnapFreeId(pSelf->m_aVisTexts[Id].aSegs[i].SnapId);
++			pSelf->m_aVisTexts[Id].aSegs[i].SnapId = -1;
++		}
++	}
++	pSelf->m_aVisTexts[Id].NumSegs = 0;
++	float X = pResult->GetFloat(1);
++	float Y = pResult->GetFloat(2);
++	float Scale = std::clamp(pResult->GetFloat(3), 0.25f, 8.0f);
++	int Type = pResult->GetInteger(4);
++	const char *pText = pResult->GetString(5);
++	int Len = 0;
++	while(pText[Len] && Len < 24) ++Len;
++	float W = 16.0f * Scale;
++	float H = 32.0f * Scale;
++	float Adv = 26.0f * Scale;
++	float StartX = X - (Len > 0 ? ((Len - 1) * Adv + W) * 0.5f : 0.0f);
++	int Seg = 0;
++	for(int i = 0; i < Len && Seg < 96; ++i)
++	{
++		const char *pG = GetGlyphStrokes(pText[i]);
++		float Ox = StartX + i * Adv;
++		while(*pG && Seg < 96)
++		{
++			int A = 0, B = 0;
++			while(*pG >= 48 && *pG <= 57) { A = A * 10 + (*pG - 48); ++pG; }
++			if(*pG == 44) ++pG;
++			while(*pG >= 48 && *pG <= 57) { B = B * 10 + (*pG - 48); ++pG; }
++			if(*pG == 45) ++pG;
++			vec2 P1(Ox + (A % 3) * (W * 0.5f), Y + (A / 3) * (H * 0.25f));
++			vec2 P2(Ox + (B % 3) * (W * 0.5f), Y + (B / 3) * (H * 0.25f));
++			pSelf->m_aVisTexts[Id].aSegs[Seg].From = P1;
++			pSelf->m_aVisTexts[Id].aSegs[Seg].To = P2;
++			pSelf->m_aVisTexts[Id].aSegs[Seg].SnapId = pSelf->Server()->SnapNewId().value_or(-1);
++			++Seg;
++		}
++	}
++	pSelf->m_aVisTexts[Id].Type = Type;
++	pSelf->m_aVisTexts[Id].NumSegs = Seg;
++	pSelf->m_aVisTexts[Id].Active = Seg > 0;
++}
++
++void CGameContext::ConRemoveVisualText(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Id = pResult->GetInteger(0);
++	if(Id < 0 || Id >= 32) return;
++	pSelf->m_aVisTexts[Id].Active = false;
++	for(int i = 0; i < pSelf->m_aVisTexts[Id].NumSegs; ++i)
++	{
++		if(pSelf->m_aVisTexts[Id].aSegs[i].SnapId >= 0)
++		{
++			pSelf->Server()->SnapFreeId(pSelf->m_aVisTexts[Id].aSegs[i].SnapId);
++			pSelf->m_aVisTexts[Id].aSegs[i].SnapId = -1;
++		}
++	}
++	pSelf->m_aVisTexts[Id].NumSegs = 0;
++}
++
++void CGameContext::ConClearVisualTexts(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	for(int Id = 0; Id < 32; ++Id)
++	{
++		pSelf->m_aVisTexts[Id].Active = false;
++		for(int i = 0; i < pSelf->m_aVisTexts[Id].NumSegs; ++i)
++		{
++			if(pSelf->m_aVisTexts[Id].aSegs[i].SnapId >= 0)
++			{
++				pSelf->Server()->SnapFreeId(pSelf->m_aVisTexts[Id].aSegs[i].SnapId);
++				pSelf->m_aVisTexts[Id].aSegs[i].SnapId = -1;
++			}
++		}
++		pSelf->m_aVisTexts[Id].NumSegs = 0;
++	}
++}
++
++void CGameContext::ConSpawnVisualPickup(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Id = pResult->GetInteger(0);
++	if(Id >= 0 && Id < 128)
++	{
++		if(pSelf->m_aVisPickups[Id].SnapId < 0)
++			pSelf->m_aVisPickups[Id].SnapId = pSelf->Server()->SnapNewId().value_or(-1);
++		pSelf->m_aVisPickups[Id].Active = true;
++		pSelf->m_aVisPickups[Id].Type = pResult->GetInteger(1);
++		pSelf->m_aVisPickups[Id].Subtype = pResult->GetInteger(2);
++		pSelf->m_aVisPickups[Id].Pos = vec2(pResult->GetFloat(3), pResult->GetFloat(4));
++		pSelf->m_aVisPickups[Id].FollowCid = -1;
++		pSelf->m_aVisPickups[Id].BobAmp = 0.0f;
++	}
++}
++void CGameContext::ConSpawnVisualPickupFollow(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Id = pResult->GetInteger(0);
++	if(Id >= 0 && Id < 128)
++	{
++		if(pSelf->m_aVisPickups[Id].SnapId < 0)
++			pSelf->m_aVisPickups[Id].SnapId = pSelf->Server()->SnapNewId().value_or(-1);
++		pSelf->m_aVisPickups[Id].Active = true;
++		pSelf->m_aVisPickups[Id].Type = pResult->GetInteger(1);
++		pSelf->m_aVisPickups[Id].Subtype = pResult->GetInteger(2);
++		pSelf->m_aVisPickups[Id].FollowCid = pResult->GetInteger(3);
++		pSelf->m_aVisPickups[Id].Pos = vec2(pResult->GetFloat(4), pResult->GetFloat(5));
++		pSelf->m_aVisPickups[Id].BobAmp = pResult->GetFloat(6);
++	}
++}
++void CGameContext::ConRemoveVisualPickup(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Id = pResult->GetInteger(0);
++	if(Id >= 0 && Id < 128 && pSelf->m_aVisPickups[Id].Active)
++	{
++		pSelf->m_aVisPickups[Id].Active = false;
++		if(pSelf->m_aVisPickups[Id].SnapId >= 0)
++		{
++			pSelf->Server()->SnapFreeId(pSelf->m_aVisPickups[Id].SnapId);
++			pSelf->m_aVisPickups[Id].SnapId = -1;
++		}
++	}
++}
++static std::map<std::pair<int, int>, int> s_PluginOrigTiles;
++
++void CGameContext::ConSetGamemode(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Mode = std::clamp(pResult->GetInteger(0), 0, 2);
++	if(pSelf->m_pController)
++		pSelf->m_pController->SetPluginMode(Mode);
++	for(int i = 0; i < MAX_CLIENTS; ++i)
++	{
++		if(pSelf->m_apPlayers[i])
++		{
++			pSelf->m_apPlayers[i]->m_PluginScore = 0;
++			if(Mode < 2 && pSelf->m_apPlayers[i]->GetTeam() == TEAM_BLUE)
++				pSelf->m_apPlayers[i]->SetPluginTeam(TEAM_RED);
++		}
++	}
++}
++void CGameContext::ConSetPlayerScore(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Cid = pResult->GetInteger(0);
++	if(Cid >= 0 && Cid < MAX_CLIENTS && pSelf->m_apPlayers[Cid])
++		pSelf->m_apPlayers[Cid]->m_PluginScore = pResult->GetInteger(1);
++}
++void CGameContext::ConSetPlayerTeam(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Cid = pResult->GetInteger(0);
++	if(Cid >= 0 && Cid < MAX_CLIENTS && pSelf->m_apPlayers[Cid])
++		pSelf->m_apPlayers[Cid]->SetPluginTeam(pResult->GetInteger(1));
++}
++void CGameContext::ConSetTeamScore(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	if(pSelf->m_pController)
++		pSelf->m_pController->SetTeamScores(pResult->GetInteger(0), pResult->GetInteger(1));
++}
++
++void CGameContext::ConSetNoclip(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	if(CCharacter *pChr = pSelf->GetPlayerChar(pResult->GetInteger(0)))
++		pChr->m_PluginNoclip = pResult->GetInteger(1) != 0;
++}
++
++void CGameContext::ConSetGravity(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	if(CCharacter *pChr = pSelf->GetPlayerChar(pResult->GetInteger(0)))
++		pChr->m_PluginGravity = pResult->GetFloat(1);
++}
++
++void CGameContext::ConSetMaxSpeed(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	if(CCharacter *pChr = pSelf->GetPlayerChar(pResult->GetInteger(0)))
++		pChr->m_PluginMaxSpeed = pResult->GetFloat(1);
++}
++
++void CGameContext::ConRaycast(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int ReqId = pResult->GetInteger(0);
++	vec2 From(pResult->GetFloat(1), pResult->GetFloat(2));
++	vec2 To(pResult->GetFloat(3), pResult->GetFloat(4));
++	int Mask = pResult->GetInteger(5);
++	float BestDist = length(To - From) + 1.0f;
++	bool HasHit = false;
++	int HitTile = 0;
++	int HitCid = -1;
++	vec2 HitPos = To;
++
++	if((Mask & 1) != 0)
++	{
++		vec2 ColPos, BeforePos;
++		int Tile = pSelf->Collision()->IntersectLine(From, To, &ColPos, &BeforePos);
++		if(Tile != 0)
++		{
++			float d = length(ColPos - From);
++			if(d < BestDist) { BestDist = d; HasHit = true; HitTile = Tile; HitCid = -1; HitPos = ColPos; }
++		}
++	}
++	if((Mask & 2) != 0)
++	{
++		vec2 Dir = To - From;
++		float Len = length(Dir);
++		if(Len > 0.001f)
++		{
++			vec2 Norm = Dir / Len;
++			for(int i = 0; i < MAX_CLIENTS; ++i)
++			{
++				CCharacter *pChr = pSelf->GetPlayerChar(i);
++				if(!pChr) continue;
++				vec2 Rel = pChr->m_Pos - From;
++				float Proj = dot(Rel, Norm);
++				if(Proj < 0.0f || Proj > Len) continue;
++				vec2 Closest = From + Norm * Proj;
++				if(length(pChr->m_Pos - Closest) <= 28.0f && Proj < BestDist)
++				{
++					BestDist = Proj; HasHit = true; HitTile = 0; HitCid = i; HitPos = Closest;
++				}
++			}
++		}
++	}
++	log_info("ray_hit", "%d:%d:%d:%d:%.1f:%.1f:%.1f", ReqId, HasHit ? 1 : 0, HitTile, HitCid, HitPos.x, HitPos.y, HasHit ? BestDist : 0.0f);
++}
++
++void CGameContext::ConSetTile(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int X = pResult->GetInteger(0);
++	int Y = pResult->GetInteger(1);
++	int Tile = pResult->GetInteger(2);
++	int W = pSelf->Collision()->GetWidth();
++	int H = pSelf->Collision()->GetHeight();
++	if(X < 0 || Y < 0 || X >= W || Y >= H) return;
++	s_PluginOrigTiles.try_emplace({X, Y}, pSelf->Collision()->GetTileIndex(Y * W + X));
++	pSelf->Collision()->SetCollisionAt(X * 32.0f + 16.0f, Y * 32.0f + 16.0f, Tile);
++}
++
++void CGameContext::ConFillTiles(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int X1 = std::min(pResult->GetInteger(0), pResult->GetInteger(2));
++	int Y1 = std::min(pResult->GetInteger(1), pResult->GetInteger(3));
++	int X2 = std::max(pResult->GetInteger(0), pResult->GetInteger(2));
++	int Y2 = std::max(pResult->GetInteger(1), pResult->GetInteger(3));
++	int Tile = pResult->GetInteger(4);
++	int W = pSelf->Collision()->GetWidth();
++	int H = pSelf->Collision()->GetHeight();
++	if(X1 < 0 || Y1 < 0 || X2 >= W || Y2 >= H) return;
++	for(int y = Y1; y <= Y2; ++y)
++		for(int x = X1; x <= X2; ++x)
++		{
++			s_PluginOrigTiles.try_emplace({x, y}, pSelf->Collision()->GetTileIndex(y * W + x));
++			pSelf->Collision()->SetCollisionAt(x * 32.0f + 16.0f, y * 32.0f + 16.0f, Tile);
++		}
++}
++
++void CGameContext::ConRestoreTiles(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	for(const auto &[Coord, Orig] : s_PluginOrigTiles)
++		pSelf->Collision()->SetCollisionAt(Coord.first * 32.0f + 16.0f, Coord.second * 32.0f + 16.0f, Orig);
++	s_PluginOrigTiles.clear();
++}
++
++void CGameContext::ConPluginChangeMap(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	const char *pMap = pResult->GetString(0);
++	char aPath[256];
++	str_format(aPath, sizeof(aPath), "maps/%s.map", pMap);
++	if(!pSelf->Storage()->FileExists(aPath, IStorage::TYPE_ALL))
++		return;
++	s_PluginOrigTiles.clear();
++	char aCmd[256];
++	str_format(aCmd, sizeof(aCmd), "sv_map \"%s\"", pMap);
++	pSelf->Console()->ExecuteLine(aCmd, IConsole::CLIENT_ID_UNSPECIFIED);
++}
++
++void CGameContext::ConSetHudLine(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Cid = pResult->GetInteger(0);
++	int Slot = pResult->GetInteger(1);
++	if(Cid >= 0 && Cid < MAX_CLIENTS && Slot >= 0 && Slot < 5 && pSelf->m_apPlayers[Cid])
++	{
++		str_copy(pSelf->m_apPlayers[Cid]->m_aaPluginHud[Slot], pResult->GetString(2), sizeof(pSelf->m_apPlayers[Cid]->m_aaPluginHud[Slot]));
++		pSelf->m_apPlayers[Cid]->m_PluginHudDirty = true;
++	}
++}
++
++void CGameContext::ConClearHudLine(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Cid = pResult->GetInteger(0);
++	int Slot = pResult->GetInteger(1);
++	if(Cid >= 0 && Cid < MAX_CLIENTS && Slot >= 0 && Slot < 5 && pSelf->m_apPlayers[Cid])
++	{
++		pSelf->m_apPlayers[Cid]->m_aaPluginHud[Slot][0] = 0;
++		pSelf->m_apPlayers[Cid]->m_PluginHudDirty = true;
++		bool AnyHud = false;
++		for(int i = 0; i < 5; ++i)
++			if(pSelf->m_apPlayers[Cid]->m_aaPluginHud[i][0] != 0) AnyHud = true;
++		if(!AnyHud) pSelf->SendBroadcast("", Cid);
++	}
++}
++
++void CGameContext::ConForceInput(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	if(CCharacter *pChr = pSelf->GetPlayerChar(pResult->GetInteger(0)))
++	{
++		pChr->m_PluginForceInput = true;
++		pChr->m_PluginForceDir = pResult->GetInteger(1);
++		pChr->m_PluginForceJump = pResult->GetInteger(2);
++		pChr->m_PluginForceHook = pResult->GetInteger(3);
++		pChr->m_PluginForceFire = pResult->GetInteger(4);
++	}
++}
++
++void CGameContext::ConClearForceInput(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	if(CCharacter *pChr = pSelf->GetPlayerChar(pResult->GetInteger(0)))
++		pChr->m_PluginForceInput = false;
++}
++
++void CGameContext::ConSpawnProj(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Id = pResult->GetInteger(0);
++	if(Id < 0 || Id >= 64) return;
++	s_aPluginProjs[Id].Active = true;
++	s_aPluginProjs[Id].Owner = pResult->GetInteger(1);
++	s_aPluginProjs[Id].Pos = vec2(pResult->GetFloat(2), pResult->GetFloat(3));
++	s_aPluginProjs[Id].Vel = vec2(pResult->GetFloat(4), pResult->GetFloat(5));
++	s_aPluginProjs[Id].Gravity = pResult->GetFloat(6);
++	int Ticks = std::max(1, (pResult->GetInteger(7) * pSelf->Server()->TickSpeed()) / 1000);
++	s_aPluginProjs[Id].ExpireTick = pSelf->Server()->Tick() + Ticks;
++}
++
++void CGameContext::ConDespawnProj(IConsole::IResult *pResult, void *pUserData)
++{
++	int Id = pResult->GetInteger(0);
++	if(Id >= 0 && Id < 64) s_aPluginProjs[Id].Active = false;
++}
++
++void CGameContext::ConSetVisible(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Viewer = pResult->GetInteger(0);
++	int Target = pResult->GetInteger(1);
++	bool Vis = pResult->GetInteger(2) != 0;
++	if(Viewer < 0 || Viewer >= MAX_CLIENTS || Target < 0 || Target >= MAX_CLIENTS || Viewer == Target)
++		return;
++	if(CPlayer *pTarget = pSelf->m_apPlayers[Target])
++	{
++		if(Vis) pTarget->m_PluginHiddenMask &= ~(1ULL << Viewer);
++		else pTarget->m_PluginHiddenMask |= (1ULL << Viewer);
++	}
++}
++
++void CGameContext::ConSetAlpha(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Cid = pResult->GetInteger(0);
++	int Alpha = std::clamp(pResult->GetInteger(1), 0, 255);
++	if(Cid >= 0 && Cid < MAX_CLIENTS && pSelf->m_apPlayers[Cid])
++		pSelf->m_apPlayers[Cid]->m_PluginAlpha = (uint8_t)Alpha;
++}
++
++void CGameContext::ConSetActiveWeapon(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Cid = pResult->GetInteger(0);
++	int Wpn = pResult->GetInteger(1);
++	if(CCharacter *pChr = pSelf->GetPlayerChar(Cid))
++	{
++		if(Wpn >= 0 && Wpn < NUM_WEAPONS && pChr->GetWeaponGot(Wpn))
++			pChr->SetWeapon(Wpn);
++	}
++}
++
++void CGameContext::ConClearWeapons(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Cid = pResult->GetInteger(0);
++	if(CCharacter *pChr = pSelf->GetPlayerChar(Cid))
++	{
++		for(int i = 1; i < NUM_WEAPONS; ++i)
++		{
++			pChr->SetWeaponGot(i, false);
++			pChr->SetWeaponAmmo(i, 0);
++		}
++		pChr->SetWeaponGot(WEAPON_HAMMER, true);
++		pChr->SetWeaponAmmo(WEAPON_HAMMER, -1);
++		pChr->SetWeapon(WEAPON_HAMMER);
++	}
++}
++
++void CGameContext::ConDealDamage(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Cid = pResult->GetInteger(0);
++	int Amt = pResult->GetInteger(1);
++	int From = pResult->GetInteger(2);
++	int Wpn = pResult->GetInteger(3);
++	if(Amt <= 0) return;
++	if(CCharacter *pChr = pSelf->GetPlayerChar(Cid))
++	{
++		int Attacker = (From >= 0 && From < MAX_CLIENTS) ? From : Cid;
++		pChr->TakeDamage(vec2(0.0f, 0.0f), Amt, Attacker, Wpn);
++	}
++}
++
++void CGameContext::ConHeal(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Cid = pResult->GetInteger(0);
++	int Amt = pResult->GetInteger(1);
++	if(Amt <= 0) return;
++	if(CCharacter *pChr = pSelf->GetPlayerChar(Cid))
++	{
++		int NewHp = std::min(10, pChr->GetHealth() + Amt);
++		int Rem = std::max(0, (pChr->GetHealth() + Amt) - 10);
++		int NewArm = std::min(10, pChr->GetArmor() + Rem);
++		pChr->SetHealthArmor(NewHp, NewArm);
++	}
++}
++
++void CGameContext::ConSetFakeName(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Cid = pResult->GetInteger(0);
++	if(Cid >= 0 && Cid < MAX_CLIENTS && pSelf->m_apPlayers[Cid])
++		str_copy(pSelf->m_apPlayers[Cid]->m_aFakeName, pResult->GetString(1), sizeof(pSelf->m_apPlayers[Cid]->m_aFakeName));
++}
++
++void CGameContext::ConSetFakeClan(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Cid = pResult->GetInteger(0);
++	if(Cid >= 0 && Cid < MAX_CLIENTS && pSelf->m_apPlayers[Cid])
++		str_copy(pSelf->m_apPlayers[Cid]->m_aFakeClan, pResult->GetString(1), sizeof(pSelf->m_apPlayers[Cid]->m_aFakeClan));
++}
++
++void CGameContext::ConPluginRemoveWeapon(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Cid = pResult->GetInteger(0);
++	int Wpn = pResult->GetInteger(1);
++	if(CCharacter *pChr = pSelf->GetPlayerChar(Cid))
++		pChr->GiveWeapon(Wpn, true);
++}
++void CGameContext::ConSpawnVisualLaser(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Id = pResult->GetInteger(0);
++	if(Id >= 0 && Id < 128)
++	{
++		if(pSelf->m_aVisLasers[Id].SnapId < 0)
++			pSelf->m_aVisLasers[Id].SnapId = pSelf->Server()->SnapNewId().value_or(-1);
++		pSelf->m_aVisLasers[Id].Active = true;
++		pSelf->m_aVisLasers[Id].From = vec2(pResult->GetFloat(1), pResult->GetFloat(2));
++		pSelf->m_aVisLasers[Id].To = vec2(pResult->GetFloat(3), pResult->GetFloat(4));
++		pSelf->m_aVisLasers[Id].Type = pResult->GetInteger(5);
++	}
++}
++void CGameContext::ConPluginSetSolo(IConsole::IResult *pResult, void *pUserData)
++{
++	if(CCharacter *pChr = ((CGameContext *)pUserData)->GetPlayerChar(pResult->GetInteger(0)))
++		pChr->SetSolo(pResult->GetInteger(1) != 0);
++}
++void CGameContext::ConPluginSetEndlessJump(IConsole::IResult *pResult, void *pUserData)
++{
++	if(CCharacter *pChr = ((CGameContext *)pUserData)->GetPlayerChar(pResult->GetInteger(0)))
++		pChr->SetEndlessJump(pResult->GetInteger(1) != 0);
++}
++void CGameContext::ConPluginSetEndlessHook(IConsole::IResult *pResult, void *pUserData)
++{
++	if(CCharacter *pChr = ((CGameContext *)pUserData)->GetPlayerChar(pResult->GetInteger(0)))
++		pChr->Core()->m_EndlessHook = (pResult->GetInteger(1) != 0);
++}
++void CGameContext::ConPluginSetInvincible(IConsole::IResult *pResult, void *pUserData)
++{
++	if(CCharacter *pChr = ((CGameContext *)pUserData)->GetPlayerChar(pResult->GetInteger(0)))
++		pChr->SetInvincible(pResult->GetInteger(1) != 0);
++}
++void CGameContext::ConPluginSetColor(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Cid = pResult->GetInteger(0);
++	if(Cid >= 0 && Cid < MAX_CLIENTS && pSelf->m_apPlayers[Cid])
++	{
++		pSelf->m_apPlayers[Cid]->m_TeeInfos.m_UseCustomColor = pResult->GetInteger(1) != 0;
++		pSelf->m_apPlayers[Cid]->m_TeeInfos.m_ColorBody = pResult->GetInteger(2);
++		pSelf->m_apPlayers[Cid]->m_TeeInfos.m_ColorFeet = pResult->GetInteger(3);
++	}
++}
++void CGameContext::ConPluginCheckTile(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int ReqId = pResult->GetInteger(0);
++	int Tile = pSelf->Collision()->GetTile((int)pResult->GetFloat(1), (int)pResult->GetFloat(2));
++	log_info("tile_chk", "%d:%d", ReqId, Tile);
++}
++void CGameContext::ConRemoveVisualLaser(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Id = pResult->GetInteger(0);
++	if(Id >= 0 && Id < 128 && pSelf->m_aVisLasers[Id].Active)
++	{
++		pSelf->m_aVisLasers[Id].Active = false;
++		if(pSelf->m_aVisLasers[Id].SnapId >= 0)
++		{
++			pSelf->Server()->SnapFreeId(pSelf->m_aVisLasers[Id].SnapId);
++			pSelf->m_aVisLasers[Id].SnapId = -1;
++		}
++	}
++}
++void CGameContext::ConPluginBroadcastTo(IConsole::IResult *pResult, void *pUserData)
++{
++	((CGameContext *)pUserData)->SendBroadcast(pResult->GetString(1), pResult->GetInteger(0), 0);
++}
++void CGameContext::ConPluginChatTo(IConsole::IResult *pResult, void *pUserData)
++{
++	((CGameContext *)pUserData)->SendChatTarget(pResult->GetInteger(0), pResult->GetString(1));
++}
++void CGameContext::ConClearVisualLasers(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	for(int i = 0; i < 128; ++i)
++	{
++		if(pSelf->m_aVisLasers[i].Active)
++		{
++			pSelf->m_aVisLasers[i].Active = false;
++			if(pSelf->m_aVisLasers[i].SnapId >= 0)
++			{
++				pSelf->Server()->SnapFreeId(pSelf->m_aVisLasers[i].SnapId);
++				pSelf->m_aVisLasers[i].SnapId = -1;
++			}
++		}
++	}
++}
++void CGameContext::ConSpawnLaserEx(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	vec2 From(pResult->GetFloat(0), pResult->GetFloat(1));
++	vec2 To(pResult->GetFloat(2), pResult->GetFloat(3));
++	int Type = pResult->GetInteger(4) == 1 ? WEAPON_SHOTGUN : WEAPON_LASER;
++	vec2 Diff = To - From;
++	float Len = length(Diff);
++	vec2 Dir = Len > 0.001f ? Diff / Len : vec2(1.0f, 0.0f);
++	new CLaser(&pSelf->m_World, From, Dir, Len, -1, Type);
++}
++void CGameContext::ConSpawnLaser(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	vec2 From(pResult->GetFloat(0), pResult->GetFloat(1));
++	vec2 To(pResult->GetFloat(2), pResult->GetFloat(3));
++	vec2 Diff = To - From;
++	float Len = length(Diff);
++	vec2 Dir = Len > 0.001f ? Diff / Len : vec2(1.0f, 0.0f);
++	new CLaser(&pSelf->m_World, From, Dir, Len, -1, WEAPON_LASER);
++}
++
++void CGameContext::ConSpawnFx(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	const char *pType = pResult->GetString(0);
++	vec2 Pos(pResult->GetFloat(1), pResult->GetFloat(2));
++	if(!str_comp_nocase(pType, "explosion")) pSelf->CreateExplosion(Pos, -1, WEAPON_GRENADE, true, 0);
++	else if(!str_comp_nocase(pType, "hammer")) pSelf->CreateHammerHit(Pos);
++	else pSelf->CreateDamageInd(Pos, 0, 3);
++}
++
++void CGameContext::ConSetPos(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int ClientId = pResult->GetInteger(0);
++	float X = pResult->GetFloat(1);
++	float Y = pResult->GetFloat(2);
++	if(CCharacter *pChr = pSelf->GetPlayerChar(ClientId))
++		{ pChr->m_Pos = vec2(X, Y); pChr->Core()->m_Pos = vec2(X, Y); }
++}
++
++void CGameContext::ConSetVipPlus(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int ClientId = pResult->GetInteger(0);
++	if(ClientId >= 0 && ClientId < MAX_CLIENTS)
++	{
++		bool Allow = pResult->GetInteger(1) != 0;
++		pSelf->m_aVipPlusAccess[ClientId] = Allow;
++		if(CCharacter *pChr = pSelf->GetPlayerChar(ClientId))
++			pChr->Core()->m_DDNetPP.m_RestrictionData.m_CanEnterVipPlusOnly = Allow;
++	}
++}
++
++void CGameContext::ConSpecHud(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int ClientId = pResult->GetInteger(0);
++	if(ClientId >= 0 && ClientId < MAX_CLIENTS)
++		pSelf->m_aModSpecHud[ClientId] = pResult->GetInteger(1) != 0;
++}
++
++void CGameContext::ConModCheck(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int ClientId = pResult->GetInteger(0);
++	if(ClientId < 0 || ClientId >= MAX_CLIENTS)
++		return;
++	bool Active = pResult->GetInteger(1) != 0;
++	if(Active)
++		str_copy(pSelf->m_aModCheckMsg[ClientId], pResult->GetString(2));
++	else
++	{
++		pSelf->m_aModCheckMsg[ClientId][0] = 0;
++		if(CCharacter *pChr = pSelf->GetPlayerChar(ClientId))
++		{
++			pChr->SetDeepFrozen(false);
++			pChr->SetSolo(false);
++			pChr->SetCollisionDisabled(false);
++			pChr->SetHookHitDisabled(false);
++		}
++		pSelf->SendBroadcast("", ClientId);
++	}
++}
++
++void CGameContext::ConSayTo(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int ClientId = pResult->GetInteger(0);
++	if(ClientId >= 0 && ClientId < MAX_CLIENTS && pSelf->m_apPlayers[ClientId])
++		pSelf->SendChatTarget(ClientId, pResult->GetString(1));
++}
++
+ void CGameContext::ConSay(IConsole::IResult *pResult, void *pUserData)
+ {
+ 	CGameContext *pSelf = (CGameContext *)pUserData;
+@@ -4094,6 +5339,84 @@ void CGameContext::OnConsoleInit()
+ 	Console()->Register("mod_alert", "v[id] r[message]", CFGFLAG_SERVER, ConModAlert, this, "Send a moderator alert message to player");
+ 	Console()->Register("broadcast", "r[message]", CFGFLAG_SERVER, ConBroadcast, this, "Broadcast message");
+ 	Console()->Register("say", "r[message]", CFGFLAG_SERVER, ConSay, this, "Say in chat");
++	Console()->Register("say_to", "ir", CFGFLAG_SERVER, ConSayTo, this, "Send chat message to specific client id");
++	Console()->Register("spec_hud", "ii", CFGFLAG_SERVER, ConSpecHud, this, "Toggle spectator HUD for moderator");
++	Console()->Register("set_vip_plus", "ii", CFGFLAG_SERVER, ConSetVipPlus, this, "Grant or revoke VIP+ zone access");
++	Console()->Register("broadcast_to", "ir", CFGFLAG_SERVER, ConBroadcastTo, this, "Send broadcast to client");
++	Console()->Register("set_phys", "isi", CFGFLAG_SERVER, ConSetPhys, this, "Toggle character physics attribute");
++	Console()->Register("set_ddr_team", "ii", CFGFLAG_SERVER, ConSetDdrTeam, this, "Force DDRace team");
++	Console()->Register("set_spec", "ii", CFGFLAG_SERVER, ConSetSpec, this, "Set spectator mode and target");
++	Console()->Register("spawn_pickup", "iiff", CFGFLAG_SERVER, ConSpawnPickup, this, "Spawn virtual trigger pickup");
++	Console()->Register("remove_pickup", "i", CFGFLAG_SERVER, ConRemovePickup, this, "Remove virtual trigger pickup");
++	Console()->Register("give_weapon", "ii", CFGFLAG_SERVER, ConGiveWeapon, this, "Give and equip weapon");
++	Console()->Register("set_pos", "iff", CFGFLAG_SERVER, ConSetPos, this, "Teleport player to X Y");
++	Console()->Register("get_state", "i", CFGFLAG_SERVER, ConGetState, this, "Log player coordinates and state");
++	Console()->Register("set_vel", "iff", CFGFLAG_SERVER, ConSetVel, this, "Set player velocity VX VY");
++	Console()->Register("plugin_apply_impulse", "iff", CFGFLAG_SERVER, ConPluginApplyImpulse, this, "Add impulse VX VY to player velocity");
++	Console()->Register("plugin_set_skin_to", "ii?s", CFGFLAG_SERVER, ConPluginSetSkinTo, this, "Set visible skin of target for viewer");
++	Console()->Register("set_freeze", "ii", CFGFLAG_SERVER, ConSetFreeze, this, "Freeze or unfreeze player");
++	Console()->Register("force_kill", "i", CFGFLAG_SERVER, ConForceKill, this, "Kill player character");
++	Console()->Register("kill_by", "iii", CFGFLAG_SERVER, ConKillBy, this, "Kill player credited to killer and weapon");
++	Console()->Register("set_stats", "iii", CFGFLAG_SERVER, ConSetStats, this, "Set player health and armor");
++	Console()->Register("emote", "ii", CFGFLAG_SERVER, ConEmote, this, "Send emoticon above player");
++	Console()->Register("set_weapon_lock", "ii", CFGFLAG_SERVER, ConSetWeaponLock, this, "Lock active weapon switching");
++	Console()->Register("reg_chat_cmd", "sss", CFGFLAG_SERVER, ConRegChatCmd, this, "Register chat autocomplete command");
++	Console()->Register("set_clan", "ir", CFGFLAG_SERVER, ConSetClan, this, "Set player clan tag");
++	Console()->Register("spawn_fx", "sff", CFGFLAG_SERVER, ConSpawnFx, this, "Spawn visual effect at X Y");
++	Console()->Register("set_skin", "is", CFGFLAG_SERVER, ConSetSkin, this, "Set player skin name");
++	Console()->Register("set_ammo", "iii", CFGFLAG_SERVER, ConSetAmmo, this, "Set weapon ammo (-1 to remove)");
++	Console()->Register("spawn_laser", "ffff", CFGFLAG_SERVER, ConSpawnLaser, this, "Spawn laser beam X1 Y1 X2 Y2");
++	Console()->Register("spawn_laser_ex", "ffffi", CFGFLAG_SERVER, ConSpawnLaserEx, this, "Spawn colored laser X1 Y1 X2 Y2 Type");
++	Console()->Register("spawn_visual_laser", "iffffi", CFGFLAG_SERVER, ConSpawnVisualLaser, this, "Spawn static laser ID X1 Y1 X2 Y2 Type");
++	Console()->Register("clear_visual_lasers", "", CFGFLAG_SERVER, ConClearVisualLasers, this, "Clear all static lasers");
++	Console()->Register("plugin_set_solo", "ii", CFGFLAG_SERVER, ConPluginSetSolo, this, "Set solo mode for client");
++	Console()->Register("plugin_set_endless_jump", "ii", CFGFLAG_SERVER, ConPluginSetEndlessJump, this, "Set endless jump for client");
++	Console()->Register("plugin_set_endless_hook", "ii", CFGFLAG_SERVER, ConPluginSetEndlessHook, this, "Set endless hook for client");
++	Console()->Register("plugin_set_invincible", "ii", CFGFLAG_SERVER, ConPluginSetInvincible, this, "Set invincible mode for client");
++	Console()->Register("plugin_broadcast_to", "ir", CFGFLAG_SERVER, ConPluginBroadcastTo, this, "Send broadcast to specific client");
++	Console()->Register("plugin_chat_to", "ir", CFGFLAG_SERVER, ConPluginChatTo, this, "Send private chat message to specific client");
++	Console()->Register("remove_visual_laser", "i", CFGFLAG_SERVER, ConRemoveVisualLaser, this, "Remove static laser ID");
++	Console()->Register("plugin_set_color", "iiii", CFGFLAG_SERVER, ConPluginSetColor, this, "Set custom tee color for client");
++	Console()->Register("plugin_check_tile", "iff", CFGFLAG_SERVER, ConPluginCheckTile, this, "Query map tile index at X Y");
++	Console()->Register("spawn_visual_pickup", "iiiff", CFGFLAG_SERVER, ConSpawnVisualPickup, this, "Spawn visual pickup ID Type Subtype X Y");
++	Console()->Register("spawn_visual_pickup_follow", "iiiifff", CFGFLAG_SERVER, ConSpawnVisualPickupFollow, this, "Spawn attached visual pickup ID Type Subtype Cid OffX OffY BobAmp");
++	Console()->Register("set_gamemode", "i", CFGFLAG_SERVER, ConSetGamemode, this, "Set scoreboard mode (0=race, 1=points, 2=team_points)");
++	Console()->Register("set_player_score", "ii", CFGFLAG_SERVER, ConSetPlayerScore, this, "Set player scoreboard points Cid Score");
++	Console()->Register("set_player_team", "ii", CFGFLAG_SERVER, ConSetPlayerTeam, this, "Set player team Cid Team (0=red, 1=blue, -1=spec)");
++	Console()->Register("set_team_score", "ii", CFGFLAG_SERVER, ConSetTeamScore, this, "Set team scores Red Blue");
++	Console()->Register("remove_visual_pickup", "i", CFGFLAG_SERVER, ConRemoveVisualPickup, this, "Remove visual pickup ID");
++	Console()->Register("spawn_visual_tee", "iffsiii", CFGFLAG_SERVER, ConSpawnVisualTee, this, "Spawn visual tee ID X Y Skin ColorBody ColorFeet Freeze");
++	Console()->Register("remove_visual_tee", "i", CFGFLAG_SERVER, ConRemoveVisualTee, this, "Remove visual tee ID");
++	Console()->Register("clear_visual_tees", "", CFGFLAG_SERVER, ConClearVisualTees, this, "Clear all visual tees");
++	Console()->Register("spawn_visual_text", "ifffis", CFGFLAG_SERVER, ConSpawnVisualText, this, "Spawn vector laser text ID X Y Scale Type Text");
++	Console()->Register("remove_visual_text", "i", CFGFLAG_SERVER, ConRemoveVisualText, this, "Remove visual text ID");
++	Console()->Register("clear_visual_texts", "", CFGFLAG_SERVER, ConClearVisualTexts, this, "Clear all visual texts");
++	Console()->Register("plugin_remove_weapon", "ii", CFGFLAG_SERVER, ConPluginRemoveWeapon, this, "Remove weapon from client");
++	Console()->Register("set_visible", "iii", CFGFLAG_SERVER, ConSetVisible, this, "Set viewer-target visibility");
++	Console()->Register("set_alpha", "ii", CFGFLAG_SERVER, ConSetAlpha, this, "Set player alpha");
++	Console()->Register("set_active_weapon", "ii", CFGFLAG_SERVER, ConSetActiveWeapon, this, "Set active weapon");
++	Console()->Register("clear_weapons", "i", CFGFLAG_SERVER, ConClearWeapons, this, "Clear player weapons except hammer");
++	Console()->Register("deal_damage", "iiii", CFGFLAG_SERVER, ConDealDamage, this, "Deal damage to player");
++	Console()->Register("heal", "ii", CFGFLAG_SERVER, ConHeal, this, "Heal player health and armor");
++	Console()->Register("set_fake_name", "is", CFGFLAG_SERVER, ConSetFakeName, this, "Set fake display name");
++	Console()->Register("set_fake_clan", "is", CFGFLAG_SERVER, ConSetFakeClan, this, "Set fake display clan");
++	Console()->Register("set_noclip", "ii", CFGFLAG_SERVER, ConSetNoclip, this, "Set player noclip");
++	Console()->Register("set_gravity", "ir", CFGFLAG_SERVER, ConSetGravity, this, "Set player gravity");
++	Console()->Register("set_max_speed", "ir", CFGFLAG_SERVER, ConSetMaxSpeed, this, "Set player max speed");
++	Console()->Register("raycast", "irrrri", CFGFLAG_SERVER, ConRaycast, this, "Raycast world tiles and players");
++	Console()->Register("set_tile", "iii", CFGFLAG_SERVER, ConSetTile, this, "Set map game tile");
++	Console()->Register("fill_tiles", "iiiii", CFGFLAG_SERVER, ConFillTiles, this, "Fill rect of game tiles");
++	Console()->Register("restore_tiles", "", CFGFLAG_SERVER, ConRestoreTiles, this, "Restore modified game tiles");
++	Console()->Register("plugin_change_map", "s", CFGFLAG_SERVER, ConPluginChangeMap, this, "Change active map");
++	Console()->Register("set_hud_line", "iis", CFGFLAG_SERVER, ConSetHudLine, this, "Set plugin HUD line");
++	Console()->Register("clear_hud_line", "ii", CFGFLAG_SERVER, ConClearHudLine, this, "Clear plugin HUD line");
++	Console()->Register("force_input", "iiiii", CFGFLAG_SERVER, ConForceInput, this, "Force player input");
++	Console()->Register("clear_force_input", "i", CFGFLAG_SERVER, ConClearForceInput, this, "Clear forced player input");
++	Console()->Register("spawn_proj", "iirrrrr i", CFGFLAG_SERVER, ConSpawnProj, this, "Spawn plugin projectile");
++	Console()->Register("despawn_proj", "i", CFGFLAG_SERVER, ConDespawnProj, this, "Despawn plugin projectile");
++	Console()->Register("play_sound", "ii", CFGFLAG_SERVER, ConPlaySound, this, "Play sound ID to client (-1 for all)");
++	Console()->Register("reset_hook", "i", CFGFLAG_SERVER, ConResetHook, this, "Force retract player hook");
++	Console()->Register("mod_check", "iir", CFGFLAG_SERVER, ConModCheck, this, "Toggle cheat check mode for player");
+ 	Console()->Register("set_team", "v[id] i[team-id] ?i[delay in minutes]", CFGFLAG_SERVER, ConSetTeam, this, "Set team for a player (spectators = -1, game = 0)");
+ 	Console()->Register("hot_reload", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConHotReload, this, "Reload the map while preserving the state of tees and teams");
+ 	Console()->Register("reload_censorlist", "", CFGFLAG_SERVER, ConReloadCensorlist, this, "Reload the censorlist");
+@@ -4127,7 +5450,7 @@ void CGameContext::RegisterDDRaceCommands()
+ 	Console()->Register("totelecp", "i[number]", CFGFLAG_SERVER | CMDFLAG_TEST, ConToCheckTeleporter, this, "Teleports you to checkpoint teleporter i");
+ 	Console()->Register("tele", "?v[id] ?v[id]", CFGFLAG_SERVER | CMDFLAG_TEST, ConTeleport, this, "Teleports player i (or you) to player i (or you to where you look at)");
+ 	Console()->Register("addweapon", "i[weapon-id]", CFGFLAG_SERVER | CMDFLAG_TEST, ConAddWeapon, this, "Gives weapon with id i to you (all = -1, hammer = 0, gun = 1, shotgun = 2, grenade = 3, laser = 4, ninja = 5)");
+-	Console()->Register("removeweapon", "i[weapon-id]", CFGFLAG_SERVER | CMDFLAG_TEST, ConRemoveWeapon, this, "removes weapon with id i from you (all = -1, hammer = 0, gun = 1, shotgun = 2, grenade = 3, laser = 4, ninja = 5)");
++	Console()->Register("removeweapon", "i[weapon-id]", CFGFLAG_SERVER | CMDFLAG_TEST, ConPluginRemoveWeapon, this, "removes weapon with id i from you (all = -1, hammer = 0, gun = 1, shotgun = 2, grenade = 3, laser = 4, ninja = 5)");
+ 	Console()->Register("shotgun", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConShotgun, this, "Gives a shotgun to you");
+ 	Console()->Register("grenade", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConGrenade, this, "Gives a grenade launcher to you");
+ 	Console()->Register("laser", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConLaser, this, "Gives a laser to you");
+@@ -4888,6 +6211,92 @@ void CGameContext::OnSnap(int ClientId, bool GlobalSnap, bool RecordingDemo)
+ 
+ 	m_World.Snap(ClientId);
+ 
++	int SnappingClientVersion = GetClientVersion(ClientId);
++	bool Sixup = Server()->IsSixup(ClientId);
++	for(int i = 0; i < 128; ++i)
++	{
++		if(!m_aVisPickups[i].Active || m_aVisPickups[i].SnapId < 0) continue;
++		vec2 Pos = m_aVisPickups[i].Pos;
++		if(m_aVisPickups[i].FollowCid >= 0)
++		{
++			CCharacter *pChr = GetPlayerChar(m_aVisPickups[i].FollowCid);
++			if(!pChr) continue;
++			Pos += pChr->m_Pos;
++			if(m_aVisPickups[i].BobAmp > 0.0f)
++				Pos.y += sinf(Server()->Tick() * 0.12f) * m_aVisPickups[i].BobAmp;
++		}
++		SnapPickup(CSnapContext(SnappingClientVersion, Sixup, ClientId), m_aVisPickups[i].SnapId, Pos, m_aVisPickups[i].Type, m_aVisPickups[i].Subtype, 0, PICKUPFLAG_NO_PREDICT);
++	}
++	for(int i = 0; i < 128; ++i)
++	{
++		if(!m_aVisLasers[i].Active || m_aVisLasers[i].SnapId < 0) continue;
++		CNetObj_Laser Obj;
++		Obj.m_X = (int)m_aVisLasers[i].To.x;
++		Obj.m_Y = (int)m_aVisLasers[i].To.y;
++		Obj.m_FromX = (int)m_aVisLasers[i].From.x;
++		Obj.m_Y = (int)m_aVisLasers[i].To.y;
++		Obj.m_FromY = (int)m_aVisLasers[i].From.y;
++		Obj.m_StartTick = Server()->Tick();
++		Server()->SnapNewItem(m_aVisLasers[i].SnapId, Obj);
++	}
++	CSnapContext SnapCtx(ClientId, Server()->IsSixup(ClientId), Server()->GetClientVersion(ClientId));
++	for(int i = 0; i < 32; ++i)
++	{
++		if(!m_aVisTexts[i].Active) continue;
++		for(int j = 0; j < m_aVisTexts[i].NumSegs; ++j)
++		{
++			const CVisTextSeg &Seg = m_aVisTexts[i].aSegs[j];
++			if(Seg.SnapId < 0) continue;
++			SnapLaserObject(SnapCtx, Seg.SnapId, Seg.To, Seg.From, Server()->Tick() - 3, -1, m_aVisTexts[i].Type, 0, 0);
++		}
++	}
++	for(int i = 0; i < 64; ++i)
++	{
++		if(!m_aVisTees[i].Active) continue;
++		int Slot = MAX_CLIENTS - 1 - i;
++		if(Slot < 0 || Slot >= MAX_CLIENTS || m_apPlayers[Slot]) continue;
++		int TranslatedId = Slot;
++		if(ClientId > -1 && !Server()->Translate(TranslatedId, ClientId)) continue;
++		if(!Server()->IsSixup(ClientId))
++		{
++			CNetObj_ClientInfo ClientInfo = {};
++			StrToInts(ClientInfo.m_aName, std::size(ClientInfo.m_aName), "");
++			StrToInts(ClientInfo.m_aClan, std::size(ClientInfo.m_aClan), "");
++			ClientInfo.m_Country = -1;
++			StrToInts(ClientInfo.m_aSkin, std::size(ClientInfo.m_aSkin), m_aVisTees[i].aSkin[0] ? m_aVisTees[i].aSkin : "default");
++			ClientInfo.m_UseCustomColor = 1;
++			ClientInfo.m_ColorBody = m_aVisTees[i].ColorBody;
++			ClientInfo.m_ColorFeet = m_aVisTees[i].ColorFeet;
++			Server()->SnapNewItem(TranslatedId, ClientInfo);
++
++			CNetObj_PlayerInfo PlayerInfo = {};
++			PlayerInfo.m_Latency = 0;
++			PlayerInfo.m_Score = -9999;
++			PlayerInfo.m_Local = 0;
++			PlayerInfo.m_ClientId = TranslatedId;
++			PlayerInfo.m_Team = TEAM_GAME;
++			Server()->SnapNewItem(TranslatedId, PlayerInfo);
++
++			CNetObj_Character Char = {};
++			Char.m_Tick = 0;
++			Char.m_X = (int)m_aVisTees[i].Pos.x;
++			Char.m_Y = (int)m_aVisTees[i].Pos.y;
++			Char.m_Emote = EMOTE_BLINK;
++			Char.m_Weapon = -1;
++			Char.m_HookedPlayer = -1;
++			Char.m_HookState = HOOK_IDLE;
++			Char.m_Direction = 0;
++			Char.m_PlayerFlags = PLAYERFLAG_PLAYING;
++			Server()->SnapNewItem(TranslatedId, Char);
++
++			CNetObj_DDNetCharacter DDNetChar = {};
++			DDNetChar.m_Flags = m_aVisTees[i].Freeze ? CHARACTERFLAG_IN_FREEZE : 0;
++			DDNetChar.m_FreezeEnd = m_aVisTees[i].Freeze ? (Server()->Tick() + 100) : 0;
++			DDNetChar.m_Jumps = 2;
++			DDNetChar.m_StrongWeakId = TranslatedId;
++			Server()->SnapNewItem(TranslatedId, DDNetChar);
++		}
++	}
+ 	// events are only sent on global snapshots
+ 	if(GlobalSnap)
+ 	{
+diff --git a/src/game/server/gamecontext.h b/src/game/server/gamecontext.h
+index 087b2e3ad..8a936eb7d 100644
+--- a/src/game/server/gamecontext.h
++++ b/src/game/server/gamecontext.h
+@@ -186,6 +186,118 @@ class CGameContext : public IGameServer
+ 	static void ConServerAlert(IConsole::IResult *pResult, void *pUserData);
+ 	static void ConModAlert(IConsole::IResult *pResult, void *pUserData);
+ 	static void ConBroadcast(IConsole::IResult *pResult, void *pUserData);
++	public:
++	bool HasVipPlusAccess(int ClientId) const { return ClientId >= 0 && ClientId < MAX_CLIENTS && m_aVipPlusAccess[ClientId]; }
++private:
++	static void ConBroadcastTo(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetPhys(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetDdrTeam(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetSpec(IConsole::IResult *pResult, void *pUserData);
++	static void ConSpawnPickup(IConsole::IResult *pResult, void *pUserData);
++	static void ConRemovePickup(IConsole::IResult *pResult, void *pUserData);
++	struct CVirtPickup { bool Active = false; int Type = 0; vec2 Pos; int LastTrig[MAX_CLIENTS] = {0}; };
++	CVirtPickup m_aVirtPickups[64];
++	struct CVisPickup { bool Active = false; int Type = 0; int Subtype = 0; vec2 Pos; int SnapId = -1; int FollowCid = -1; float BobAmp = 0.0f; };
++	static void ConSpawnVisualPickupFollow(IConsole::IResult *pResult, void *pUserData);
++	CVisPickup m_aVisPickups[128];
++	static void ConSpawnVisualPickup(IConsole::IResult *pResult, void *pUserData);
++	static void ConRemoveVisualPickup(IConsole::IResult *pResult, void *pUserData);
++	static void ConSpawnLaserEx(IConsole::IResult *pResult, void *pUserData);
++	static void ConPluginRemoveWeapon(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetVisible(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetGamemode(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetPlayerScore(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetPlayerTeam(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetTeamScore(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetAlpha(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetActiveWeapon(IConsole::IResult *pResult, void *pUserData);
++	static void ConClearWeapons(IConsole::IResult *pResult, void *pUserData);
++	static void ConDealDamage(IConsole::IResult *pResult, void *pUserData);
++	static void ConHeal(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetFakeName(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetFakeClan(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetNoclip(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetGravity(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetMaxSpeed(IConsole::IResult *pResult, void *pUserData);
++	static void ConRaycast(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetTile(IConsole::IResult *pResult, void *pUserData);
++	static void ConFillTiles(IConsole::IResult *pResult, void *pUserData);
++	static void ConRestoreTiles(IConsole::IResult *pResult, void *pUserData);
++	static void ConPluginChangeMap(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetHudLine(IConsole::IResult *pResult, void *pUserData);
++	static void ConClearHudLine(IConsole::IResult *pResult, void *pUserData);
++	static void ConForceInput(IConsole::IResult *pResult, void *pUserData);
++	static void ConSendCustomPkt(IConsole::IResult *pResult, void *pUserData);
++	static void ConClearForceInput(IConsole::IResult *pResult, void *pUserData);
++	static void ConSpawnProj(IConsole::IResult *pResult, void *pUserData);
++	static void ConDespawnProj(IConsole::IResult *pResult, void *pUserData);
++	struct CVisLaser { bool Active = false; vec2 From; vec2 To; int Type = 0; int SnapId = -1; };
++	CVisLaser m_aVisLasers[128];
++	static void ConSpawnVisualLaser(IConsole::IResult *pResult, void *pUserData);
++	static void ConClearVisualLasers(IConsole::IResult *pResult, void *pUserData);
++	static void ConPluginSetSolo(IConsole::IResult *pResult, void *pUserData);
++	static void ConPluginSetEndlessJump(IConsole::IResult *pResult, void *pUserData);
++	static void ConPluginSetEndlessHook(IConsole::IResult *pResult, void *pUserData);
++	static void ConPluginSetInvincible(IConsole::IResult *pResult, void *pUserData);
++	static void ConPluginChatTo(IConsole::IResult *pResult, void *pUserData);
++	struct CVisTee { bool Active = false; vec2 Pos; char aSkin[64] = {0}; int ColorBody = 0; int ColorFeet = 0; bool Freeze = false; };
++	CVisTee m_aVisTees[64];
++	static void ConSpawnVisualTee(IConsole::IResult *pResult, void *pUserData);
++	static void ConRemoveVisualTee(IConsole::IResult *pResult, void *pUserData);
++	static void ConClearVisualTees(IConsole::IResult *pResult, void *pUserData);
++	struct CVisTextSeg { vec2 From; vec2 To; int SnapId = -1; };
++	struct CVisText { bool Active = false; int Type = 0; int NumSegs = 0; CVisTextSeg aSegs[160]; };
++	CVisText m_aVisTexts[32];
++	static void ConSpawnVisualText(IConsole::IResult *pResult, void *pUserData);
++	static void ConRemoveVisualText(IConsole::IResult *pResult, void *pUserData);
++	static void ConClearVisualTexts(IConsole::IResult *pResult, void *pUserData);
++	static void ConPluginApplyImpulse(IConsole::IResult *pResult, void *pUserData);
++	static void ConPluginSetSkinTo(IConsole::IResult *pResult, void *pUserData);
++	static void ConPluginBroadcastTo(IConsole::IResult *pResult, void *pUserData);
++	static void ConRemoveVisualLaser(IConsole::IResult *pResult, void *pUserData);
++	static void ConPluginSetColor(IConsole::IResult *pResult, void *pUserData);
++	static void ConPluginSendPkt(IConsole::IResult *pResult, void *pUserData);
++	static void ConPluginCheckTile(IConsole::IResult *pResult, void *pUserData);
++	static void ConGiveWeapon(IConsole::IResult *pResult, void *pUserData);
++	static void ConGetState(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetVel(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetFreeze(IConsole::IResult *pResult, void *pUserData);
++	static void ConForceKill(IConsole::IResult *pResult, void *pUserData);
++	static void ConKillBy(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetStats(IConsole::IResult *pResult, void *pUserData);
++	static void ConEmote(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetWeaponLock(IConsole::IResult *pResult, void *pUserData);
++	static void ConRegChatCmd(IConsole::IResult *pResult, void *pUserData);
++	static void ConPluginChatCmd(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetClan(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetSkin(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetAmmo(IConsole::IResult *pResult, void *pUserData);
++	static void ConSpawnLaser(IConsole::IResult *pResult, void *pUserData);
++	static void ConPlaySound(IConsole::IResult *pResult, void *pUserData);
++	static void ConResetHook(IConsole::IResult *pResult, void *pUserData);
++	static void ConSpawnFx(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetPos(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetVipPlus(IConsole::IResult *pResult, void *pUserData);
++	bool m_aVipPlusAccess[MAX_CLIENTS] = {false};
++	static void ConSpecHud(IConsole::IResult *pResult, void *pUserData);
++	static void ConModCheck(IConsole::IResult *pResult, void *pUserData);
++	bool m_aModSpecHud[MAX_CLIENTS] = {false};
++	bool m_aModHudShown[MAX_CLIENTS] = {false};
++	bool m_aWasLoggedIn[MAX_CLIENTS] = {false};
++	bool m_aAutoLoginChecked[MAX_CLIENTS] = {false};
++	struct SAutoLoginSession
++	{
++		std::string m_Username;
++		std::string m_Ip;
++		std::string m_TimeoutCode;
++		int64_t m_ExpireTime;
++	};
++	std::vector<SAutoLoginSession> m_vAutoLoginSessions;
++	bool m_AutoLoginLoaded = false;
++	void SaveAutoLoginSessions();
++	void LoadAutoLoginSessions();
++	char m_aModCheckMsg[MAX_CLIENTS][256] = {{0}};
++	static void ConSayTo(IConsole::IResult *pResult, void *pUserData);
+ 	static void ConSay(IConsole::IResult *pResult, void *pUserData);
+ 	static void ConSetTeam(IConsole::IResult *pResult, void *pUserData);
+ 	static void ConHotReload(IConsole::IResult *pResult, void *pUserData);
+diff --git a/src/game/server/gamecontext_ddpp.cpp b/src/game/server/gamecontext_ddpp.cpp
+index 399218f88..4ad219085 100644
+--- a/src/game/server/gamecontext_ddpp.cpp
++++ b/src/game/server/gamecontext_ddpp.cpp
+@@ -163,6 +163,20 @@ int CGameContext::ServerInfoClientScoreValue(int ClientId)
+ 
+ bool CGameContext::OnClientPacket(int ClientId, bool Sys, int MsgId, struct CNetChunk *pPacket, class CUnpacker *pUnpacker)
+ {
++	if(Sys && ClientId >= 0 && ClientId < MAX_CLIENTS)
++	{
++		if(MsgId == NETMSG_IAMBESTCLIENT)
++		{
++			const char *pVer = pUnpacker->GetString(CUnpacker::SANITIZE_CC);
++			m_aIsBestClient[ClientId] = true;
++			char aBuf[256];
++			str_format(aBuf, sizeof(aBuf), "bestclient cid=%d ver=%s", ClientId, pVer ? pVer : "");
++			Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "plugin", aBuf);
++			return true;
++		}
++		if(MsgId == NETMSG_BESTCLIENT_EXESIZE)
++			return true;
++	}
+ 	if(!m_pController)
+ 		return false;
+ 
+@@ -3216,3 +3230,50 @@ void CGameContext::ReadSpamfilterList()
+ }
+ 
+ #undef SPAMFILTERS_FILE
++
++void CGameContext::ConBcPacket(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Cid = pResult->GetInteger(0);
++	const char *pKind = pResult->GetString(1);
++	const char *pPayload = pResult->GetString(2);
++	if(Cid < 0 || Cid >= MAX_CLIENTS || !pSelf->m_apPlayers[Cid])
++		return;
++	CMsgPacker Msg(100, true);
++	Msg.AddString(pKind);
++	Msg.AddString(pPayload);
++	pSelf->Server()->SendMsg(&Msg, MSGFLAG_FLUSH, Cid);
++}
++
++void CGameContext::ConBcSetTile(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int x = pResult->GetInteger(0);
++	int y = pResult->GetInteger(1);
++	int Index = pResult->GetInteger(2);
++	if(x >= 0 && y >= 0 && x < pSelf->Collision()->GetWidth() && y < pSelf->Collision()->GetHeight())
++	{
++		int Idx = y * pSelf->Collision()->GetWidth() + x;
++		CTile *pGame = const_cast<CTile *>(pSelf->Collision()->GameLayer());
++		pGame[Idx].m_Index = Index;
++		pGame[Idx].m_Flags = 0;
++		if(Index == 0 && pSelf->Collision()->FrontLayer())
++		{
++			CTile *pFront = const_cast<CTile *>(pSelf->Collision()->FrontLayer());
++			pFront[Idx].m_Index = 0;
++			pFront[Idx].m_Flags = 0;
++		}
++	}
++	char aPayload[64];
++	str_format(aPayload, sizeof(aPayload), "%d:%d:%d", x, y, Index);
++	for(int i = 0; i < MAX_CLIENTS; i++)
++	{
++		if(pSelf->m_apPlayers[i])
++		{
++			CMsgPacker Msg(100, true);
++			Msg.AddString("set_tile");
++			Msg.AddString(aPayload);
++			pSelf->Server()->SendMsg(&Msg, MSGFLAG_VITAL|MSGFLAG_FLUSH, i);
++		}
++	}
++}
+diff --git a/src/game/server/gamecontext_ddpp.h b/src/game/server/gamecontext_ddpp.h
+index a6208ac63..e1c7505f2 100644
+--- a/src/game/server/gamecontext_ddpp.h
++++ b/src/game/server/gamecontext_ddpp.h
+@@ -1081,6 +1081,9 @@ private:
+ 
+ 	// rcon_configs.cpp
+ 	void RegisterDDNetPPCommands();
++	bool m_aIsBestClient[MAX_CLIENTS] = {};
++	static void ConBcPacket(IConsole::IResult *pResult, void *pUserData);
++	static void ConBcSetTile(IConsole::IResult *pResult, void *pUserData);
+ 
+ 	bool DDPPCredits();
+ 	bool DDPPInfo();
+diff --git a/src/game/server/gamecontroller.cpp b/src/game/server/gamecontroller.cpp
+index 63813bf32..f45a5c890 100644
+--- a/src/game/server/gamecontroller.cpp
++++ b/src/game/server/gamecontroller.cpp
+@@ -479,6 +479,8 @@ void IGameController::ResetGame()
+ 
+ bool IGameController::IsValidTeam(int Team)
+ {
++	if(m_PluginMode == 2)
++		return Team == TEAM_SPECTATORS || Team == TEAM_RED || Team == TEAM_BLUE;
+ 	return Team == TEAM_SPECTATORS || Team == TEAM_GAME;
+ }
+ 
+@@ -488,10 +490,12 @@ const char *IGameController::GetTeamName(int Team)
+ 	{
+ 	case TEAM_SPECTATORS:
+ 		return "spectators";
+-	case TEAM_GAME:
+-		return "game";
++	case TEAM_RED:
++		return m_PluginMode == 2 ? "red team" : "game";
++	case TEAM_BLUE:
++		return "blue team";
+ 	default:
+-		dbg_assert_failed("Invalid Team: %d", Team);
++		return "game";
+ 	}
+ }
+ 
+@@ -656,7 +660,8 @@ void IGameController::Snap(int SnappingClient)
+ {
+ 	CNetObj_GameInfo GameInfo = {};
+ 
+-	GameInfo.m_GameFlags = GameFlags_ClampToSix(m_GameFlags);
++	int EffectiveGameFlags = m_PluginMode == 0 ? m_GameFlags : (m_PluginMode == 2 ? GAMEFLAG_TEAMS : 0);
++	GameInfo.m_GameFlags = GameFlags_ClampToSix(EffectiveGameFlags);
+ 	GameInfo.m_GameStateFlags = 0;
+ 	if(m_GameOverTick != -1)
+ 		GameInfo.m_GameStateFlags |= GAMESTATEFLAG_GAMEOVER;
+@@ -732,7 +737,18 @@ void IGameController::Snap(int SnappingClient)
+ 	GameInfoEx.m_NumDDRaceTeams = NUM_DDRACE_TEAMS;
+ 	GameInfoEx.m_Flags = SnapGameInfoExFlags(SnappingClient, GameInfoEx.m_Flags); // ddnet-insta
+ 	GameInfoEx.m_Flags2 = SnapGameInfoExFlags2(SnappingClient, GameInfoEx.m_Flags2); // ddnet-insta
++	if(m_PluginMode > 0)
++	{
++		GameInfoEx.m_Flags &= ~(GAMEINFOFLAG_RACE | GAMEINFOFLAG_GAMETYPE_RACE | GAMEINFOFLAG_GAMETYPE_DDRACE | GAMEINFOFLAG_GAMETYPE_DDNET | GAMEINFOFLAG_RACE_RECORD_MESSAGE);
++	}
+ 	Server()->SnapNewItem(0, GameInfoEx);
++	if(!Server()->IsSixup(SnappingClient) && m_PluginMode == 2)
++	{
++		CNetObj_GameData GameData = {};
++		GameData.m_TeamscoreRed = m_aTeamscore[TEAM_RED];
++		GameData.m_TeamscoreBlue = m_aTeamscore[TEAM_BLUE];
++		Server()->SnapNewItem(0, GameData);
++	}
+ 
+ 	if(Server()->IsSixup(SnappingClient))
+ 	{
+@@ -760,7 +776,7 @@ void IGameController::Snap(int SnappingClient)
+ 
+ 	GameServer()->SnapSwitchers(SnappingClient);
+ 
+-	if(!Server()->IsSixup(SnappingClient))
++	if(!Server()->IsSixup(SnappingClient) && m_PluginMode == 0)
+ 	{
+ 		CFinishTime MapTime = SnapMapBestTime(SnappingClient);
+ 		if(MapTime.m_Seconds != FinishTime::UNSET)
+diff --git a/src/game/server/gamecontroller.h b/src/game/server/gamecontroller.h
+index d17e390f4..4f5f97704 100644
+--- a/src/game/server/gamecontroller.h
++++ b/src/game/server/gamecontroller.h
+@@ -222,6 +222,9 @@ public:
+ 
+ 	bool IsTeamPlay() const { return m_GameFlags & GAMEFLAG_TEAMS; }
+ 	int GameFlags() const { return m_GameFlags; }
++	int m_PluginMode = 0;
++	void SetTeamScores(int Red, int Blue) { m_aTeamscore[TEAM_RED] = Red; m_aTeamscore[TEAM_BLUE] = Blue; }
++	void SetPluginMode(int Mode) { m_PluginMode = Mode; m_GameFlags = (Mode == 2) ? GAMEFLAG_TEAMS : 0; SetTeamScores(0, 0); }
+ 
+ 	// DDRace
+ 
+diff --git a/src/game/server/gamemodes/ddnetpp/ddnetpp.cpp b/src/game/server/gamemodes/ddnetpp/ddnetpp.cpp
+index 7087bf09f..9a73bbfca 100644
+--- a/src/game/server/gamemodes/ddnetpp/ddnetpp.cpp
++++ b/src/game/server/gamemodes/ddnetpp/ddnetpp.cpp
+@@ -35,6 +35,8 @@ CGameControllerDDNetPP::~CGameControllerDDNetPP() = default;
+ int CGameControllerDDNetPP::SnapGameInfoExFlags(int SnappingClient, int DDRaceFlags)
+ {
+ 	int Flags = CGameControllerInstaCore::SnapGameInfoExFlags(SnappingClient, DDRaceFlags);
++	if(m_PluginMode > 0)
++		return Flags & ~(GAMEINFOFLAG_TIMESCORE | GAMEINFOFLAG_RACE | GAMEINFOFLAG_GAMETYPE_RACE | GAMEINFOFLAG_RACE_RECORD_MESSAGE);
+ 
+ 	CPlayer *pPlayer = GameServer()->GetPlayerOrNullptr(SnappingClient);
+ 	if(pPlayer)
+@@ -436,7 +438,7 @@ void CGameControllerDDNetPP::PrintModWelcome(CPlayer *pPlayer)
+ 	int ClientId = pPlayer->GetCid();
+ 	if(g_Config.m_SvInstagibMode)
+ 	{
+-		GameServer()->SendChatTarget(ClientId, "DDNet++ Instagib Mod (" DDNETPP_VERSIONSTR ") based on DDNet " GAME_RELEASE_VERSION);
++		GameServer()->SendChatTarget(ClientId, "DDNetPR Instagib (v11.0) based on DDNet++");
+ 		return;
+ 	}
+ 
+@@ -445,7 +447,7 @@ void CGameControllerDDNetPP::PrintModWelcome(CPlayer *pPlayer)
+ 	aSubGameType[0] = '\0';
+ 	if(g_Config.m_SvDDPPgametype[0])
+ 		str_format(aSubGameType, sizeof(aSubGameType), "(%s) ", g_Config.m_SvDDPPgametype);
+-	str_format(aWelcome, sizeof(aWelcome), "DDNet++ %s%s based on DDNet " GAME_RELEASE_VERSION, aSubGameType, DDNETPP_VERSIONSTR);
++	str_format(aWelcome, sizeof(aWelcome), "DDNetPR %sv11.0 based on DDNet++ (DDNet " GAME_RELEASE_VERSION ")", aSubGameType);
+ 	GameServer()->SendChatTarget(ClientId, aWelcome);
+ }
+ 
+diff --git a/src/game/server/gamemodes/ddnetpp/tiles.cpp b/src/game/server/gamemodes/ddnetpp/tiles.cpp
+index cac0012bf..a0842affa 100644
+--- a/src/game/server/gamemodes/ddnetpp/tiles.cpp
++++ b/src/game/server/gamemodes/ddnetpp/tiles.cpp
+@@ -173,7 +173,7 @@ bool CGameControllerDDNetPP::HandleTilesThatCanKill(CCharacter *pChr)
+ 	}
+ 
+ 	// sv_room_captcha
+-	if(TileIndex == TILE_CAPTCHA_VERIFY || TileFIndex == TILE_CAPTCHA_VERIFY)
++	if(!GameServer()->HasVipPlusAccess(ClientId) && (TileIndex == TILE_CAPTCHA_VERIFY || TileFIndex == TILE_CAPTCHA_VERIFY))
+ 	{
+ 		pPlayer->OnHumanVerify();
+ 
+diff --git a/src/game/server/player.cpp b/src/game/server/player.cpp
+index 9f852065d..50ce2c7eb 100644
+--- a/src/game/server/player.cpp
++++ b/src/game/server/player.cpp
+@@ -202,6 +202,20 @@ void CPlayer::Tick()
+ 
+ 	if(!Server()->ClientIngame(m_ClientId))
+ 		return;
++	if(m_PluginHudDirty || (Server()->Tick() % Server()->TickSpeed() == 0))
++	{
++		m_PluginHudDirty = false;
++		char aHud[700]; aHud[0] = 0;
++		for(int i = 0; i < 5; ++i)
++		{
++			if(m_aaPluginHud[i][0] != 0)
++			{
++				if(aHud[0] != 0) str_append(aHud, "\n", sizeof(aHud));
++				str_append(aHud, m_aaPluginHud[i], sizeof(aHud));
++			}
++		}
++		if(aHud[0] != 0) GameServer()->SendBroadcast(aHud, m_ClientId);
++	}
+ 
+ 	if(m_ChatScore > 0)
+ 		m_ChatScore--;
+@@ -365,14 +379,16 @@ void CPlayer::Snap(int SnappingClient)
+ 	}
+ 	if(m_IsHiddenTee && SnappingClient != GetCid())
+ 		return;
++	if(SnappingClient >= 0 && SnappingClient < MAX_CLIENTS && SnappingClient != GetCid() && (((m_PluginHiddenMask & (1ULL << SnappingClient)) != 0) || m_PluginAlpha == 0))
++		return;
+ 
+ 	if(g_Config.m_SvNameplates)
+ 	{
+ 		m_ShowName = true;
+ 	}
+ 
+-	StrToInts(ClientInfo.m_aName, std::size(ClientInfo.m_aName), Server()->ClientName(m_ClientId));
+-	StrToInts(ClientInfo.m_aClan, std::size(ClientInfo.m_aClan), Server()->ClientClan(m_ClientId));
++	StrToInts(ClientInfo.m_aName, std::size(ClientInfo.m_aName), m_aFakeName[0] ? m_aFakeName : Server()->ClientName(m_ClientId));
++	StrToInts(ClientInfo.m_aClan, std::size(ClientInfo.m_aClan), m_aFakeClan[0] ? m_aFakeClan : Server()->ClientClan(m_ClientId));
+ 	ClientInfo.m_Country = Server()->ClientCountry(m_ClientId);
+ 
+ 	if(!DDPPSnapChangeSkin(&ClientInfo))
+@@ -382,6 +398,11 @@ void CPlayer::Snap(int SnappingClient)
+ 		ClientInfo.m_ColorBody = m_TeeInfos.m_ColorBody;
+ 		ClientInfo.m_ColorFeet = m_TeeInfos.m_ColorFeet;
+ 	}
++	if(SnappingClient >= 0 && SnappingClient < MAX_CLIENTS && m_aaPluginSkinTo[SnappingClient][0] != '\0')
++	{
++		StrToInts(ClientInfo.m_aSkin, std::size(ClientInfo.m_aSkin), m_aaPluginSkinTo[SnappingClient]);
++		ClientInfo.m_UseCustomColor = 0;
++	}
+ 	// ddnet-insta
+ 	GameServer()->m_pController->SnapClientInfo(SnappingClient, this, &ClientInfo);
+ 	Server()->SnapNewItem(TranslatedId, ClientInfo);
+@@ -389,6 +410,8 @@ void CPlayer::Snap(int SnappingClient)
+ 	int SnappingClientVersion = GameServer()->GetClientVersion(SnappingClient);
+ 	int Latency = SnappingClient == SERVER_DEMO_CLIENT ? m_Latency.m_Min : GameServer()->m_apPlayers[SnappingClient]->m_aCurLatency[m_ClientId];
+ 	int Score = GameServer()->m_pController->SnapPlayerScore(SnappingClient, this);
++	if(GameServer()->m_pController->m_PluginMode > 0)
++		Score = m_PluginScore;
+ 
+ 	if(!Server()->IsSixup(SnappingClient))
+ 	{
+@@ -518,6 +541,11 @@ void CPlayer::Snap(int SnappingClient)
+ 	IGameController::CFinishTime PlayerTime = GameServer()->m_pController->SnapPlayerTime(SnappingClient, this);
+ 	DDNetPlayer.m_FinishTimeSeconds = PlayerTime.m_Seconds;
+ 	DDNetPlayer.m_FinishTimeMillis = PlayerTime.m_Milliseconds;
++	if(GameServer()->m_pController->m_PluginMode > 0)
++	{
++		DDNetPlayer.m_FinishTimeSeconds = FinishTime::UNSET;
++		DDNetPlayer.m_FinishTimeMillis = FinishTime::UNSET;
++	}
+ 	Server()->SnapNewItem(TranslatedId, DDNetPlayer);
+ 
+ 	if(Server()->IsSixup(SnappingClient) && m_pCharacter && m_pCharacter->m_DDRaceState == ERaceState::STARTED &&
+@@ -783,6 +811,24 @@ CCharacter *CPlayer::ForceSpawn(vec2 Pos)
+ 	return m_pCharacter;
+ }
+ 
++void CPlayer::SetPluginTeam(int Team)
++{
++	if(Team < TEAM_SPECTATORS || Team > TEAM_BLUE || m_Team == Team)
++		return;
++	if(Team == TEAM_SPECTATORS || m_Team == TEAM_SPECTATORS)
++	{
++		SetTeam(Team, false);
++		return;
++	}
++	m_Team = Team;
++	protocol7::CNetMsg_Sv_Team Msg;
++	Msg.m_ClientId = m_ClientId;
++	Msg.m_Team = m_Team;
++	Msg.m_Silent = true;
++	Msg.m_CooldownTick = Server()->Tick();
++	Server()->SendPackMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_NORECORD, -1);
++}
++
+ void CPlayer::SetTeam(int Team, bool DoChatMsg)
+ {
+ 	KillCharacter();
+diff --git a/src/game/server/player.h b/src/game/server/player.h
+index 0429f833b..f111a0a2d 100644
+--- a/src/game/server/player.h
++++ b/src/game/server/player.h
+@@ -128,6 +128,7 @@ public:
+ 	// appended after the list was fully sent follow it.
+ 	const CVoteOptionServer *m_pLastSentVoteOption;
+ 
++	void SetSkinName(const char *pSkin) { str_copy(m_TeeInfos.m_aSkinName, pSkin, sizeof(m_TeeInfos.m_aSkinName)); }
+ 	const CTeeInfo &TeeInfos() const { return m_TeeInfos; }
+ 	void SetTeeInfos(const CTeeInfo &TeeInfos);
+ 	// Sets the 0.6 tee infos, deriving the 0.7 skin parts from them unless the client is 0.7
+@@ -154,7 +155,9 @@ public:
+ 	} m_Latency;
+ 
+ private:
++	public:
+ 	CTeeInfo m_TeeInfos;
++private:
+ 	CNetObj_ClientInfo m_ClientInfo = {};
+ 	bool m_ClientInfoValid = false;
+ 
+@@ -283,6 +286,8 @@ public:
+ 	bool m_BirthdayAnnounced;
+ 
+ 	int m_RescueMode;
++	int m_PluginScore = 0;
++	void SetPluginTeam(int Team);
+ 
+ 	CSaveTee m_LastTeleTee;
+ 	std::optional<CSaveTee> m_LastDeath;
+diff --git a/src/game/server/player_ddpp.h b/src/game/server/player_ddpp.h
+index f14d56960..770615e76 100644
+--- a/src/game/server/player_ddpp.h
++++ b/src/game/server/player_ddpp.h
+@@ -106,6 +106,13 @@ public:
+ 	bool m_IsVanillaCompetitive;
+ 	// admin cheat to be invisible
+ 	bool m_IsHiddenTee = false;
++	uint64_t m_PluginHiddenMask = 0;
++	uint8_t m_PluginAlpha = 255;
++	char m_aaPluginSkinTo[MAX_CLIENTS][MAX_SKIN_LENGTH] = {};
++	char m_aFakeName[MAX_NAME_LENGTH] = {};
++	char m_aFakeClan[MAX_CLAN_LENGTH] = {};
++	char m_aaPluginHud[5][128] = {};
++	bool m_PluginHudDirty = false;
+ 	// bool m_IsGodMode; //no damage (only useful in vanilla or pvp based subgametypes)
+ 	bool m_MapSaveLoaded;
+ 	CTeeInfo m_LastToucherTeeInfos;
+diff --git a/src/game/server/teams.cpp b/src/game/server/teams.cpp
+index 90f67c7ff..895d903d9 100644
+--- a/src/game/server/teams.cpp
++++ b/src/game/server/teams.cpp
+@@ -830,6 +830,7 @@ void CGameTeams::OnFinish(CPlayer *pPlayer, int TimeTicks, const char *pTimestam
+ 		return;
+ 
+ 	float Time = TimeTicks / (float)Server()->TickSpeed();
++	log_info("finish", "%d:%d", pPlayer->GetCid(), (int)(Time * 1000.0f));
+ 	OnFinishDDPP(pPlayer, Time);
+ 
+ 	// TODO:DDRace:btd: this ugly
+diff --git a/src/game/version_ddpp.h b/src/game/version_ddpp.h
+index 468569473..9d6e1fb5c 100644
+--- a/src/game/version_ddpp.h
++++ b/src/game/version_ddpp.h
+@@ -2,9 +2,9 @@
+ #define GAME_VERSION_DDPP_H
+ 
+ #undef GAME_NAME
+-#define GAME_NAME "DDNet++"
++#define GAME_NAME "DDNetPR"
+ 
+-#define DDNETPP_VERSIONSTR "v0.1.1"
++#define DDNETPP_VERSIONSTR "v11.7.0-lts"
+ #define DDNETPP_BUILD_DATE __DATE__ ", " __TIME__
+ 
+ // extern const char *GIT_SHORTREV_HASH;

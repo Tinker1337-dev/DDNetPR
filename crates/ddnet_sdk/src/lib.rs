@@ -1298,6 +1298,14 @@ impl ServerApi {
             id, kind, sub, cid, off_x, off_y, bob_amp
         ));
     }
+    /// Sets scoreboard mode (`0` = Race/Time, `1` = Points, `2` = Team Points).
+    pub fn set_gamemode(&self, mode: i32) { self.raw(&format!("set_gamemode {}", mode)); }
+    /// Sets a player's integer scoreboard points.
+    pub fn set_player_score(&self, cid: i32, score: i32) { self.raw(&format!("set_player_score {} {}", cid, score)); }
+    /// Sets a player's team (`0` = Red, `1` = Blue, `-1` = Spectators).
+    pub fn set_player_team(&self, cid: i32, team: i32) { self.raw(&format!("set_player_team {} {}", cid, team)); }
+    /// Sets Red and Blue team scores.
+    pub fn set_team_score(&self, red: i32, blue: i32) { self.raw(&format!("set_team_score {} {}", red, blue)); }
     /// Removes a persistent visual pickup by ID.
     pub fn remove_visual_pickup(&self, id: i32) {
         self.raw(&format!("remove_visual_pickup {}", id));

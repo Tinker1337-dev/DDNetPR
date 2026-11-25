@@ -1,0 +1,7 @@
+[package]
+name = "plugin_gamemode"
+version = "11.0.0"
+edition = "2024"
+
+[dependencies]
+ddnet_sdk = { path = "/root/ddnet_sdk" }
