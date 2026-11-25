@@ -123,7 +123,7 @@ fn main() {
                 api.whisper(&asker, &format!("[Персонал] {}", if staff.is_empty() { "Пусто".into() } else { staff.join(" | ") }));
             }
         }
-        Event::DbResult { req_id, value } => {
+        Event::DbValue { req_id, value } => {
             if let Some(q) = queue.remove(&req_id) {
                 let role = Role::from_str(&value);
                 if q.cmd == "_init" {

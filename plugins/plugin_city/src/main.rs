@@ -152,7 +152,7 @@ fn main() {
                 }
             }
         }
-        Event::DbResult { req_id, value } => {
+        Event::DbValue { req_id, value } => {
             if let Some(act) = pending.remove(&req_id) {
                 let cur: i64 = value.parse().unwrap_or(0);
                 match act {
