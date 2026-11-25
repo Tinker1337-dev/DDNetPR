@@ -2,24 +2,24 @@ use crate::dx::{PlayerId, Vec2};
 use crate::{PlayerPos, ServerApi};
 
 impl Vec2 {
-    /// Squared Euclidean distance to another point.
+    /// Квадрат евклидова расстояния до другой точки.
     pub fn distance_sq(self, other: Self) -> f32 {
         let dx = self.x - other.x;
         let dy = self.y - other.y;
         dx * dx + dy * dy
     }
 
-    /// Euclidean distance to another point in pixels.
+    /// Евклидово расстояние до другой точки в пикселях.
     pub fn distance(self, other: Self) -> f32 {
         self.distance_sq(other).sqrt()
     }
 
-    /// Vector length (magnitude).
+    /// Длина (модуль) вектора.
     pub fn length(self) -> f32 {
         (self.x * self.x + self.y * self.y).sqrt()
     }
 
-    /// Returns a unit-length vector, or `(0.0, 0.0)` if zero-length.
+    /// Возвращает единичный вектор или `(0.0, 0.0)` для нулевого вектора.
     pub fn normalized(self) -> Self {
         let len = self.length();
         if len > 1e-6 {
@@ -29,24 +29,24 @@ impl Vec2 {
         }
     }
 
-    /// Dot product with another vector.
+    /// Скалярное произведение с другим вектором.
     pub fn dot(self, other: Self) -> f32 {
         self.x * other.x + self.y * other.y
     }
 
-    /// Subtracts `other` from `self`.
+    /// Вычитает вектор `other` из `self`.
     pub fn sub(self, other: Self) -> Self {
         Self { x: self.x - other.x, y: self.y - other.y }
     }
 }
 
 impl ServerApi {
-    /// Returns the world position of an alive cached player, if available.
+    /// Возвращает мировые координаты живого игрока из кэша, если они доступны.
     pub fn player_pos(&self, cid: PlayerId) -> Option<Vec2> {
         self.states.get(&cid.0).filter(|p| p.alive).map(|p| Vec2::new(p.x, p.y))
     }
 
-    /// Returns alive players within `radius` pixels of `center`, sorted nearest-first.
+    /// Возвращает живых игроков в радиусе `radius` пикселей от `center`, отсортированных по удалённости.
     pub fn players_in_radius(
         &self,
         center: Vec2,
@@ -67,7 +67,7 @@ impl ServerApi {
         out
     }
 
-    /// Returns the closest alive player within `max_radius` pixels of `center`.
+    /// Возвращает ближайшего живого игрока в пределах `max_radius` пикселей от `center`.
     pub fn nearest_player(
         &self,
         center: Vec2,
@@ -77,7 +77,7 @@ impl ServerApi {
         self.players_in_radius(center, max_radius, exclude).into_iter().next()
     }
 
-    /// Checks whether the segment `from -> to` is unobstructed by other alive players.
+    /// Проверяет, не перекрыт ли отрезок `from -> to` другими живыми игроками.
     pub fn line_of_sight(
         &self,
         from: Vec2,
@@ -106,7 +106,7 @@ impl ServerApi {
         true
     }
 
-    /// Invokes `f(cid, pos, dist)` for every alive player inside a forward cone.
+    /// Вызывает `f(cid, pos, dist)` для каждого живого игрока внутри переднего конуса обзора.
     pub fn for_each_player_in_cone<F>(
         &self,
         origin: Vec2,

@@ -778,6 +778,11 @@ fn spawn_plugin(
                                 continue;
                             }
                         }
+                        // Уведомляем все плагины о смене карты для сброса временных режимов
+                        if head == "change_map" {
+                            let map_arg = cmd.strip_prefix("change_map").unwrap_or("").trim().trim_matches('"');
+                            if let Ok(mut list) = plugins_ref.lock() { for pl in list.iter_mut() { if pl.enabled && let Some(ref mut sin) = pl.stdin { let _ = writeln!(sin, "IPC|manager|MAP_CHANGE|{}", map_arg); } } }
+                        }
                         if let Some(need) = required_permission(cmd) {
                             let ok = plugins_ref
                                 .lock()

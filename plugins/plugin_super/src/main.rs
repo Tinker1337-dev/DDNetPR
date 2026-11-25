@@ -61,6 +61,10 @@ fn toggle_super(api: &mut ServerApi, cid: i32, player: &str, supers: &mut HashSe
         api.set_invincible(cid, false); api.set_endless_jump(cid, false);
         api.set_endless_hook(cid, false); api.set_phys(cid, "jetpack", false);
         api.set_phys(cid, "hammer_hit", true);
+        // Забираем выданные супер-оружки (слоты 1..=4), чтобы не оставались пустыми
+        for w in 1..=4 {
+            api.set_ammo(cid, w, if w == 1 { 10 } else { -1 });
+        }
         api.set_color(cid, false, 0, 0); api.play_sound(cid, 30);
         api.whisper(player, "[SUPER] Режим бога ВЫКЛЮЧЕН.");
     } else {
@@ -186,6 +190,15 @@ fn main() {
                 }
                 return EventAction::Cancel;
             }
+        }
+        // Сбрасываем активный супер-режим и невидимость при смене карты
+        Event::Ipc { from, payload } if from == "manager" && payload.starts_with("MAP_CHANGE|") => {
+            supers.clear();
+            vanishes.clear();
+            fire_held.clear();
+            hook_held.clear();
+            active_wpn.clear();
+            api.track_positions(false);
         }
         Event::Leave { .. } => {
             api.states.retain(|&c, _| api.player_cids.values().any(|&v| v == c));

@@ -1,12 +1,12 @@
 use std::fmt;
 
-/// Typed client identifier (CID) preventing argument mix-ups.
+/// Типизированный идентификатор клиента (CID), предотвращающий путаницу аргументов.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub struct PlayerId(pub i32);
 
 impl PlayerId {
-    /// Returns true if the identifier is non-negative.
+    /// Возвращает true, если идентификатор неотрицательный.
     ///
     /// # Examples
     /// ```
@@ -35,18 +35,18 @@ impl fmt::Display for PlayerId {
     }
 }
 
-/// 2D world coordinates in pixels.
+/// Двумерные мировые координаты в пикселях.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct Vec2 {
-    /// Horizontal X coordinate in pixels.
+    /// Горизонтальная координата X в пикселях.
     pub x: f32,
-    /// Vertical Y coordinate in pixels.
+    /// Вертикальная координата Y в пикселях.
     pub y: f32,
 }
 
 impl Vec2 {
-    /// Creates a new 2D vector.
+    /// Создаёт новый двумерный вектор.
     ///
     /// # Examples
     /// ```
@@ -59,21 +59,21 @@ impl Vec2 {
     }
 }
 
-/// DDNet weapon identifiers.
+/// Идентификаторы оружия DDNet.
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Weapon {
-    /// Hammer (slot 0).
+    /// Молот (слот 0).
     Hammer = 0,
-    /// Pistol / Gun (slot 1).
+    /// Пистолет (слот 1).
     Gun = 1,
-    /// Shotgun (slot 2).
+    /// Дробовик (слот 2).
     Shotgun = 2,
-    /// Grenade launcher (slot 3).
+    /// Гранатомёт (слот 3).
     Grenade = 3,
-    /// Laser / Rifle (slot 4).
+    /// Лазерная винтовка (слот 4).
     Laser = 4,
-    /// Ninja katana (slot 5).
+    /// Катана ниндзя (слот 5).
     Katana = 5,
 }
 
@@ -95,71 +95,71 @@ impl From<Weapon> for i32 {
     }
 }
 
-/// Bitmask controlling raycast collision targets.
+/// Битовая маска целей столкновения при трассировке луча (raycast).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub struct RayMask(pub u32);
 
 impl RayMask {
-    /// Collide with solid map tiles (bit 0).
+    /// Столкновение с твёрдыми тайлами карты (бит 0).
     pub const TILE: Self = Self(1);
-    /// Collide with alive active players (bit 1).
+    /// Столкновение с живыми активными игроками (бит 1).
     pub const PLAYER: Self = Self(2);
-    /// Collide with both map tiles and players.
+    /// Столкновение как с тайлами карты, так и с игроками.
     pub const BOTH: Self = Self(3);
 }
 
-/// Result of a synchronous world raycast query.
+/// Результат синхронного запроса трассировки луча (raycast).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct RayHit {
-    /// Hit tile index (0 if player hit).
+    /// Индекс задетого тайла (0, если попадание в игрока).
     pub tile: i32,
-    /// Hit player identifier (invalid if tile hit).
+    /// Идентификатор задетого игрока (невалидный, если попадание в тайл).
     pub cid: PlayerId,
-    /// World X coordinate of impact in pixels.
+    /// Мировая координата X точки попадания в пикселях.
     pub x: f32,
-    /// World Y coordinate of impact in pixels.
+    /// Мировая координата Y точки попадания в пикселях.
     pub y: f32,
-    /// Distance from ray origin to impact in pixels.
+    /// Расстояние от начала луча до точки попадания в пикселях.
     pub dist: f32,
 }
 
-/// Unified error type returned by v10.0+ SDK primitives.
+/// Единый тип ошибок, возвращаемый примитивами SDK v10.0+.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SdkError {
-    /// Plugin manifest lacks the required capability flag.
+    /// В манифесте плагина отсутствует необходимый флаг разрешения.
     PermissionDenied {
-        /// Name of the missing permission flag.
+        /// Имя отсутствующего флага разрешения.
         needed: &'static str,
     },
-    /// Provided client ID is outside valid server bounds.
+    /// Переданный идентификатор клиента (CID) выходит за допустимые пределы сервера.
     InvalidCid(PlayerId),
-    /// Coordinates or slot index are outside valid boundaries.
+    /// Координаты или индекс слота выходят за допустимые границы.
     OutOfBounds {
-        /// Horizontal coordinate or slot index.
+        /// Горизонтальная координата или индекс слота.
         x: i32,
-        /// Vertical coordinate.
+        /// Вертикальная координата.
         y: i32,
     },
-    /// Server-wide projectile cap has been reached.
+    /// Достигнут общесерверный лимит снарядов.
     TooManyProjectiles {
-        /// Maximum active projectiles allowed.
+        /// Максимально допустимое количество активных снарядов.
         limit: usize,
     },
-    /// Target player is not currently online.
+    /// Целевой игрок сейчас не в сети.
     NotOnline(PlayerId),
-    /// Argument value failed range or format validation.
+    /// Значение аргумента не прошло проверку диапазона или формата.
     InvalidArg {
-        /// Parameter name.
+        /// Имя параметра.
         name: &'static str,
-        /// Reason for rejection.
+        /// Причина отклонения.
         reason: &'static str,
     },
 }
 
 impl SdkError {
-    /// Returns an actionable troubleshooting hint for this error.
+    /// Возвращает практическую подсказку по устранению этой ошибки.
     pub fn hint(&self) -> &'static str {
         match self {
             Self::PermissionDenied { .. } => "enable missing flag via api.set_manifest(...)",
@@ -186,7 +186,7 @@ impl fmt::Display for SdkError {
 }
 impl std::error::Error for SdkError {}
 
-/// Convenient re-exports for DDNet++ v10.0+ plugins.
+/// Удобные реэкспорты для плагинов DDNet++ v10.0+.
 ///
 /// # Examples
 /// ```

@@ -28,6 +28,19 @@ index 6e8ee8a61..bb2f24dd5 100644
 +
 +UUID(NETMSG_IAMBESTCLIENT, "i-am-bestclient@bestclient.fun")
 +UUID(NETMSG_BESTCLIENT_EXESIZE, "exe-size@bestclient.fun")
+diff --git a/src/game/server/ddnetpp/chat_commands.h b/src/game/server/ddnetpp/chat_commands.h
+index 0a01f5565..daa2527a4 100644
+--- a/src/game/server/ddnetpp/chat_commands.h
++++ b/src/game/server/ddnetpp/chat_commands.h
+@@ -12,6 +12,8 @@
+ // account stuff
+ CHAT_COMMAND("changepassword", "?sss", CFGFLAG_CHAT | CFGFLAG_SERVER, ConChangePassword, this, "change your account password with '/changepassword <old password> <new password> <new password repeat>'")
+ CHAT_COMMAND("register", "?sss", CFGFLAG_CHAT | CFGFLAG_SERVER, ConRegister, this, "Register an sql account")
++// Короткий алиас для регистрации SQL-аккаунта
++CHAT_COMMAND("reg", "?sss", CFGFLAG_CHAT | CFGFLAG_SERVER, ConRegister, this, "Register an sql account (alias for /register)")
+ CHAT_COMMAND("login", "?ss", CFGFLAG_CHAT | CFGFLAG_SERVER, ConLogin, this, "Login an sql account")
+ CHAT_COMMAND("register2", "?sss", CFGFLAG_CHAT | CFGFLAG_SERVER, ConRegister2, this, "Register an filebased account")
+ CHAT_COMMAND("login2", "?ss", CFGFLAG_CHAT | CFGFLAG_SERVER, ConLogin2, this, "Login an filebased account")
 diff --git a/src/game/server/ddnetpp/db/accounts.cpp b/src/game/server/ddnetpp/db/accounts.cpp
 index 83fa5dbb7..f0d85ff9c 100644
 --- a/src/game/server/ddnetpp/db/accounts.cpp
@@ -2659,6 +2672,34 @@ index a6208ac63..e1c7505f2 100644
  
  	bool DDPPCredits();
  	bool DDPPInfo();
+diff --git a/src/game/server/gamecontext_ratelimits.cpp b/src/game/server/gamecontext_ratelimits.cpp
+index ac69c4e11..335fb06f5 100644
+--- a/src/game/server/gamecontext_ratelimits.cpp
++++ b/src/game/server/gamecontext_ratelimits.cpp
+@@ -186,13 +186,11 @@ void CGameContext::LoginBanCheck(int ClientId)
+ 	char aBuf[128];
+ 	int Found = 0;
+ 	int Atts = 0;
+-	int64_t BanTime = 0;
+ 	// find a matching ban for this ip, update expiration time if found
+ 	for(int i = 0; i < m_NumLoginBans; i++)
+ 	{
+ 		if(net_addr_comp_noport(&m_aLoginBans[i].m_Addr, pAddr) == 0)
+ 		{
+-			BanTime = (m_aLoginBans[i].m_Expire - Server()->Tick()) / Server()->TickSpeed();
+ 			m_aLoginBans[m_NumLoginBans].m_LastAttempt = time_get();
+ 			Atts = ++m_aLoginBans[i].m_NumAttempts;
+ 			Found = 1;
+@@ -217,8 +215,7 @@ void CGameContext::LoginBanCheck(int ClientId)
+ 
+ 	if(Atts >= g_Config.m_SvMaxLoginPerIp)
+ 		LoginBan(pAddr, 60 * 60 * 12, Server()->ClientName(ClientId));
+-	else if(Atts % 3 == 0 && BanTime < 60) // rate limit every 3 fails for 1 minute ( only if bantime is less than 1 min )
+-		LoginBan(pAddr, 60, Server()->ClientName(ClientId));
++	// Не баним новичков на 60 секунд за опечатки при вводе /reg или /login
+ 
+ 	if(Found)
+ 	{
 diff --git a/src/game/server/gamecontroller.cpp b/src/game/server/gamecontroller.cpp
 index 63813bf32..3bdeb7d58 100644
 --- a/src/game/server/gamecontroller.cpp

@@ -1,4 +1,4 @@
-//! Non-blocking asynchronous file logger for DDNetPR plugins (`logs/<plugin>.log`).
+//! Неблокирующий асинхронный файловый логгер для плагинов DDNetPR (`logs/<plugin>.log`).
 
 use std::fmt;
 use std::fs::{self, OpenOptions};
@@ -12,15 +12,15 @@ static LOGGER: OnceLock<SyncSender<String>> = OnceLock::new();
 static PLUGIN_NAME: OnceLock<String> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-/// Severity level.
+/// Уровень важности сообщения.
 pub enum LogLevel {
-    /// Debug.
+    /// Отладка.
     Debug,
-    /// Info.
+    /// Информация.
     Info,
-    /// Warning.
+    /// Предупреждение.
     Warn,
-    /// Error.
+    /// Ошибка.
     Error,
 }
 
@@ -62,7 +62,7 @@ fn format_utc_now() -> String {
     format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}Z", year, m, d, hour, min, sec)
 }
 
-/// Initializes the background file writer at `logs/<plugin_name>.log` once per process.
+/// Инициализирует фоновую запись логов в `logs/<plugin_name>.log` один раз на процесс.
 pub fn init(plugin_name: &str) {
     let clean = sanitize_name(plugin_name);
     let _ = PLUGIN_NAME.set(clean.clone());
@@ -86,7 +86,7 @@ pub fn init(plugin_name: &str) {
     });
 }
 
-/// Encueues a formatted log line without blocking the caller thread.
+/// Ставит отформатированную строку лога в очередь без блокировки вызывающего потока.
 pub fn write_log(level: LogLevel, msg: &str) {
     if LOGGER.get().is_none() {
         let fallback = PLUGIN_NAME.get().map(|s| s.as_str()).unwrap_or("plugin");
@@ -99,25 +99,25 @@ pub fn write_log(level: LogLevel, msg: &str) {
 }
 
 
-/// Logs an informational message to logs/<plugin>.log.
+/// Записывает информационное сообщение в `logs/<plugin>.log`.
 #[macro_export]
 macro_rules! log_info {
     ($($arg:tt)*) => { $crate::log::write_log($crate::log::LogLevel::Info, &format!($($arg)*)) };
 }
 
-/// Logs a warning message to logs/<plugin>.log.
+/// Записывает предупреждение в `logs/<plugin>.log`.
 #[macro_export]
 macro_rules! log_warn {
     ($($arg:tt)*) => { $crate::log::write_log($crate::log::LogLevel::Warn, &format!($($arg)*)) };
 }
 
-/// Logs an error message to logs/<plugin>.log.
+/// Записывает сообщение об ошибке в `logs/<plugin>.log`.
 #[macro_export]
 macro_rules! log_error {
     ($($arg:tt)*) => { $crate::log::write_log($crate::log::LogLevel::Error, &format!($($arg)*)) };
 }
 
-/// Logs a debug message to logs/<plugin>.log.
+/// Записывает отладочное сообщение в `logs/<plugin>.log`.
 #[macro_export]
 macro_rules! log_debug {
     ($($arg:tt)*) => { $crate::log::write_log($crate::log::LogLevel::Debug, &format!($($arg)*)) };

@@ -2,13 +2,13 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
-/// Plugin configuration trait implemented by `plugin_config!`.
+/// Трейт конфигурации плагина, реализуемый макросом `plugin_config!`.
 pub trait PluginConfig: Default + Clone + 'static {
-    /// Serializes current values with comments into `.cfg` format.
+    /// Сериализует текущие значения с комментариями в формат `.cfg`.
     fn to_cfg_string(&self) -> String;
-    /// Parses `key = value` pairs into a config instance, using defaults for missing keys.
+    /// Разбирает пары `key = value` в структуру конфигурации, подставляя значения по умолчанию для отсутствующих ключей.
     fn from_cfg_str(content: &str) -> (Self, bool);
-    /// Loads `configs/<plugin_name>.cfg`, creating or updating it with missing default keys.
+    /// Загружает `configs/<plugin_name>.cfg`, создавая файл или дополняя его недостающими ключами по умолчанию.
     fn load_or_create(plugin_name: &str) -> Self {
         let dir = match std::env::var("DDNET_SERVER_DIR") {
             Ok(base) if !base.trim().is_empty() => PathBuf::from(base).join("configs"),
@@ -33,7 +33,7 @@ pub trait PluginConfig: Default + Clone + 'static {
     }
 }
 
-/// Parses raw `.cfg` lines into a key-value map ignoring `#` and `//` comments.
+/// Разбирает строки `.cfg` в карту ключ-значение, игнорируя комментарии `#` и `//`.
 pub fn parse_cfg_map(content: &str) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for line in content.lines() {
@@ -48,7 +48,7 @@ pub fn parse_cfg_map(content: &str) -> HashMap<String, String> {
     map
 }
 
-/// Defines a plugin configuration struct with auto-generated `.cfg` serialization.
+/// Определяет структуру конфигурации плагина с автогенерацией сериализации в `.cfg`.
 #[macro_export]
 macro_rules! plugin_config {
     ( $(#[$m:meta])* $v:vis struct $n:ident { $( $(#[doc = $d:expr])* $fv:vis $f:ident : $t:ty = $def:expr ),* $(,)? } ) => {

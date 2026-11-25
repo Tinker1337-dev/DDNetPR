@@ -1,17 +1,17 @@
 #![warn(missing_docs)]
-//! DDNet++ Ultimate Plugin Platform SDK (v10.0 LTS).
+//! SDK платформы плагинов DDNetPR / DDNet++ (v11.0.0 LTS).
 
-/// Typed DX primitives, errors, and prelude re-exports.
+/// Типизированные DX-примитивы, ошибки и реэкспорты prelude.
 pub mod config;
 pub use config::PluginConfig;
-/// Trait-based event dispatcher.
+/// Диспетчер событий на основе трейта EventHandler.
 pub mod handler;
 pub use handler::EventHandler;
-/// Spatial query helpers built on top of cached player states.
+/// Вспомогательные пространственные запросы поверх кэша позиций игроков.
 pub mod spatial;
-/// Asynchronous file logger (`logs/<plugin>.log`).
+/// Асинхронный файловый логгер (`logs/<plugin>.log`).
 pub mod log;
-/// Typed DX primitives, errors, and prelude re-exports.
+/// Типизированные DX-примитивы, ошибки и реэкспорты prelude.
 pub mod dx;
 
 pub use dx::prelude;
@@ -24,9 +24,9 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc;
 use std::thread;
 
-/// Returns the SDK API version string (`"11.0.0"`).
+/// Возвращает строку версии API SDK (`"11.0.0"`).
 ///
-/// # Examples
+/// # Примеры
 /// ```
 /// assert_eq!(ddnet_sdk::plugin_api_version(), "11.0.0");
 /// ```
@@ -34,325 +34,325 @@ pub fn plugin_api_version() -> &'static str {
     "11.0.0"
 }
 
-/// Plugin execution priority hint.
+/// Приоритет выполнения плагина.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Priority {
-    /// High priority (runs first).
+    /// Высокий приоритет (выполняется первым).
     High,
-    /// Normal default priority.
+    /// Обычный приоритет по умолчанию.
     Normal,
-    /// Low priority (runs last).
+    /// Низкий приоритет (выполняется последним).
     Low,
 }
 
-/// Action returned by intercepting event handlers.
+/// Действие, возвращаемое перехватывающими обработчиками событий.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventAction {
-    /// Pass event further to core and other plugins.
+    /// Передать событие дальше в ядро и другим плагинам.
     Pass,
-    /// Legacy v9.2 alias for Pass.
+    /// Устаревший псевдоним v9.2 для Pass.
     Continue,
-    /// Cancel event propagation.
+    /// Отменить дальнейшую обработку события.
     Cancel,
 }
 
-/// Cached player position and velocity snapshot.
+/// Снимок позиции и скорости игрока из кэша.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct PlayerPos {
-    /// World X coordinate in pixels.
+    /// Мировая координата X в пикселях.
     pub x: f32,
-    /// World Y coordinate in pixels.
+    /// Мировая координата Y в пикселях.
     pub y: f32,
-    /// Horizontal velocity.
+    /// Горизонтальная скорость.
     pub vx: f32,
-    /// Vertical velocity.
+    /// Вертикальная скорость.
     pub vy: f32,
-    /// Whether the player character is currently alive.
+    /// Жив ли персонаж игрока в данный момент.
     pub alive: bool,
-    /// Remaining freeze ticks.
+    /// Оставшиеся тики заморозки.
     pub frozen: i32,
-    /// Active weapon ID.
+    /// Идентификатор активного оружия.
     pub weapon: i32,
 }
 
-/// Server and manager events delivered to plugins.
+/// События сервера и менеджера, доставляемые плагинам.
 #[derive(Clone, Debug)]
 pub enum Event {
-    /// Player joined the server.
+    /// Игрок зашёл на сервер.
     Join {
-        /// Player nickname.
+        /// Никнейм игрока.
         player: String,
     },
-    /// Player left the server.
+    /// Игрок вышел с сервера.
     Leave {
-        /// Player nickname.
+        /// Никнейм игрока.
         player: String,
     },
-    /// Player renamed.
+    /// Игрок сменил никнейм.
     Rename {
-        /// Previous nickname.
+        /// Предыдущий никнейм.
         old: String,
-        /// New nickname.
+        /// Новый никнейм.
         new: String,
-        /// Legacy alias for new nickname.
+        /// Устаревшее поле нового никнейма.
         new_name: String,
     },
-    /// Player changed team (`0` = Red, `1` = Blue, `-1` = Spectator).
+    /// Игрок сменил команду (`0` = Red, `1` = Blue, `-1` = Наблюдатель).
     TeamChange {
-        /// Player client ID (`0..63`).
+        /// Идентификатор клиента игрока (`0..63`).
         cid: i32,
-        /// Player nickname.
+        /// Никнейм игрока.
         player: String,
-        /// Team ID (`0` = Red, `1` = Blue, `-1` = Spectator).
+        /// Идентификатор команды (`0` = Red, `1` = Blue, `-1` = Наблюдатель).
         team: i32,
     },
-    /// Chat message or command received.
+    /// Получено сообщение в чате или чат-команда.
     Chat {
-        /// Chat team channel (`0` = public).
+        /// Канал чата (`0` = общий).
         team: i32,
-        /// Sender nickname.
+        /// Никнейм отправителя.
         player: String,
-        /// Raw message text.
+        /// Исходный текст сообщения.
         message: String,
     },
-    /// BestClient handshake received.
+    /// Получено рукопожатие клиента BestClient.
     BestClient {
-        /// Client ID.
+        /// Идентификатор клиента (CID).
         cid: i32,
-        /// Client version string.
+        /// Строка версии клиента.
         version: String,
     },
-    /// Player authenticated via account system.
+    /// Игрок авторизовался через систему аккаунтов.
     Auth {
-        /// Client ID.
+        /// Идентификатор клиента (CID).
         cid: i32,
-        /// Player nickname.
+        /// Никнейм игрока.
         player: String,
-        /// Account username.
+        /// Логин аккаунта.
         account: String,
     },
-    /// Role updated for an account.
+    /// Обновлена роль аккаунта.
     Role {
-        /// Account username.
+        /// Логин аккаунта.
         account: String,
-        /// Assigned role name.
+        /// Назначенное имя роли.
         role: String,
     },
-    /// Periodic 1-second server tick.
+    /// Периодический серверный тик раз в секунду.
     Tick {
-        /// Uptime in seconds.
+        /// Аптайм сервера в секундах.
         uptime_sec: u64,
     },
-    /// High-frequency 100ms tick.
+    /// Высокочастотный тик каждые 100 мс.
     FastTick {
-        /// Uptime in milliseconds.
+        /// Аптайм сервера в миллисекундах.
         uptime_ms: u64,
     },
-    /// Scheduled timer callback fired.
+    /// Сработал запланированный таймер.
     Scheduled {
-        /// Plugin-defined timer identifier.
+        /// Идентификатор таймера, заданный плагином.
         callback_id: u64,
     },
-    /// Inter-plugin message received.
+    /// Получено межплагинное сообщение.
     Ipc {
-        /// Sender plugin name.
+        /// Имя плагина-отправителя.
         from: String,
-        /// Payload string.
+        /// Строка полезных данных.
         payload: String,
     },
-    /// Key-value database response.
+    /// Ответ от key-value базы данных.
     DbValue {
-        /// Request correlation identifier.
+        /// Идентификатор запроса для сопоставления ответа.
         req_id: String,
-        /// Returned string value.
+        /// Возвращённое строковое значение.
         value: String,
     },
-    /// Key-value prefix list response.
+    /// Ответ списка записей из БД по префиксу.
     DbList {
-        /// Request correlation identifier.
+        /// Идентификатор запроса для сопоставления ответа.
         req_id: String,
-        /// Parsed `(key, value)` pairs.
+        /// Разобранные пары `(ключ, значение)`.
         items: Vec<(String, String)>,
     },
-    /// Player movement/action input snapshot.
+    /// Снимок управления и действий игрока.
     Input {
-        /// Client ID.
+        /// Идентификатор клиента (CID).
         cid: i32,
-        /// Horizontal direction (`-1`, `0`, `1`).
+        /// Направление по горизонтали (`-1`, `0`, `1`).
         dir: i32,
-        /// Jump flag.
+        /// Флаг прыжка.
         jump: i32,
-        /// Hook flag.
+        /// Флаг использования крюка.
         hook: i32,
-        /// Fire counter/flag.
+        /// Счётчик/флаг выстрела.
         fire: i32,
-        /// Aim target X.
+        /// Координата прицела X.
         target_x: i32,
-        /// Aim target Y.
+        /// Координата прицела Y.
         target_y: i32,
     },
-    /// Legacy online list update.
+    /// Устаревшее событие обновления списка игроков онлайн.
     Online {
-        /// Online player nicknames.
+        /// Никнеймы игроков онлайн.
         players: Vec<String>,
     },
-    /// Legacy DB result event.
+    /// Устаревшее событие результата БД.
     DbResult {
-        /// Request ID.
+        /// Идентификатор запроса.
         req_id: String,
-        /// Value string.
+        /// Строковое значение.
         value: String,
     },
-    /// Legacy detailed player state snapshot.
+    /// Устаревший детальный снимок состояния игрока.
     PlayerState {
-        /// Client ID.
+        /// Идентификатор клиента (CID).
         cid: i32,
-        /// Player nickname.
+        /// Никнейм игрока.
         player: String,
-        /// World X.
+        /// Мировая координата X.
         x: f32,
-        /// World Y.
+        /// Мировая координата Y.
         y: f32,
-        /// Velocity X.
+        /// Скорость по X.
         vx: f32,
-        /// Velocity Y.
+        /// Скорость по Y.
         vy: f32,
-        /// Freeze ticks.
+        /// Тики заморозки.
         frozen: i32,
-        /// Active weapon.
+        /// Активное оружие.
         weapon: i32,
     },
-    /// Player state/position update.
+    /// Обновление состояния и позиции игрока.
     State {
-        /// Client ID.
+        /// Идентификатор клиента (CID).
         cid: i32,
-        /// Player snapshot.
+        /// Снимок состояния игрока.
         pos: PlayerPos,
     },
-    /// Player kill event.
+    /// Событие убийства игрока.
     Kill {
-        /// Killer nickname.
+        /// Никнейм убийцы.
         killer: String,
-        /// Victim nickname.
+        /// Никнейм жертвы.
         victim: String,
-        /// Weapon ID.
+        /// Идентификатор оружия.
         weapon: i32,
     },
-    /// Player death event.
+    /// Событие смерти игрока.
     Death {
-        /// Client ID.
+        /// Идентификатор клиента (CID).
         cid: i32,
-        /// Killer client ID (`-1` if world).
+        /// Идентификатор клиента убийцы (`-1`, если мир/карта).
         killer: i32,
-        /// Weapon ID.
+        /// Идентификатор оружия.
         weapon: i32,
     },
-    /// Player took damage.
+    /// Игрок получил урон.
     Damage {
-        /// Victim client ID.
+        /// Идентификатор клиента жертвы.
         cid: i32,
-        /// Attacker client ID.
+        /// Идентификатор клиента атакующего.
         attacker: i32,
-        /// Damage amount.
+        /// Количество нанесённого урона.
         amount: i32,
-        /// Weapon ID.
+        /// Идентификатор оружия.
         weapon: i32,
     },
-    /// Player finished a map/race.
+    /// Игрок финишировал на карте или в гонке.
     Finish {
-        /// Client ID.
+        /// Идентификатор клиента (CID).
         cid: i32,
-        /// Finish time in seconds.
+        /// Время прохождения в секундах.
         time: f32,
     },
-    /// Player touched a special tile.
+    /// Игрок коснулся специального тайла.
     Tile {
-        /// Client ID.
+        /// Идентификатор клиента (CID).
         cid: i32,
-        /// Tile index.
+        /// Индекс тайла.
         tile: i32,
-        /// Tile X coordinate.
+        /// Координата тайла X.
         x: i32,
-        /// Tile Y coordinate.
+        /// Координата тайла Y.
         y: i32,
     },
-    /// Weapon hit event.
+    /// Событие попадания оружия в игрока.
     WeaponHit {
-        /// Attacker client ID.
+        /// Идентификатор клиента атакующего.
         attacker: i32,
-        /// Victim client ID.
+        /// Идентификатор клиента жертвы.
         victim: i32,
-        /// Weapon ID.
+        /// Идентификатор оружия.
         weapon: i32,
     },
-    /// Hammer hit event.
+    /// Событие удара молотом по игроку.
     HammerHit {
-        /// Attacker nickname.
+        /// Никнейм атакующего.
         attacker: String,
-        /// Victim nickname.
+        /// Никнейм жертвы.
         victim: String,
     },
-    /// Pickup collected event.
+    /// Событие подбора предмета (пикапа).
     Pickup {
-        /// Client ID.
+        /// Идентификатор клиента (CID).
         cid: i32,
-        /// Pickup type.
+        /// Тип подобранного предмета.
         kind: i32,
     },
-    /// Active weapon changed.
+    /// Сменилось активное оружие игрока.
     WeaponChange {
-        /// Client ID.
+        /// Идентификатор клиента (CID).
         cid: i32,
-        /// Previous weapon ID.
+        /// Идентификатор предыдущего оружия.
         old: i32,
-        /// New weapon ID.
+        /// Идентификатор нового оружия.
         new: i32,
     },
-    /// Player hook attached to a tile or another player.
+    /// Крюк игрока зацепился за тайл или другого игрока.
     HookAttach {
-        /// Client ID of the hooking player.
+        /// Идентификатор клиента, выпустившего крюк.
         cid: i32,
-        /// Hooked target client ID, or None if attached to world geometry.
+        /// Идентификатор зацепленного игрока или None, если крюк зацепился за геометрию карты.
         hooked_cid: Option<i32>,
-        /// World coordinates where the hook attached.
+        /// Мировые координаты точки зацепа крюка.
         pos: crate::dx::Vec2,
     },
-    /// Player hook detached.
+    /// Крюк игрока отцепился.
     HookDetach {
-        /// Client ID of the player.
+        /// Идентификатор клиента игрока.
         cid: i32,
-        /// Previously hooked player ID, if any.
+        /// Идентификатор ранее зацепленного игрока, если был.
         prev_hooked_cid: Option<i32>,
     },
 }
 
 type LifecycleHook = Box<dyn FnMut(&mut ServerApi)>;
 
-/// Main SDK handle passed to plugin event callbacks.
+/// Основной дескриптор SDK, передаваемый в обработчики событий плагина.
 pub struct ServerApi {
-    /// Currently online player nicknames.
+    /// Никнеймы игроков, находящихся сейчас в сети.
     pub online: HashSet<String>,
-    /// Client IDs verified as BestClient.
+    /// Идентификаторы клиентов, подтвердивших клиент BestClient.
     pub best_clients: HashSet<i32>,
-    /// Map from nickname to client ID (`i32`).
+    /// Карта соответствия никнейма и идентификатора клиента (`i32`).
     pub cids: HashMap<String, i32>,
-    /// Legacy v9.2 alias for `cids`.
+    /// Устаревший псевдоним v9.2 для поля `cids`.
     pub player_cids: HashMap<String, i32>,
-    /// Map from client ID (`i32`) to nickname.
+    /// Карта соответствия идентификатора клиента (`i32`) и никнейма.
     pub names: HashMap<i32, String>,
-    /// Map from nickname to client IP address.
+    /// Карта соответствия никнейма и IP-адреса клиента.
     pub ips: HashMap<String, String>,
-    /// Legacy v9.2 alias for `ips`.
+    /// Устаревший псевдоним v9.2 для поля `ips`.
     pub player_ips: HashMap<String, String>,
-    /// Map from nickname to authenticated account name.
+    /// Карта соответствия никнейма и логина авторизованного аккаунта.
     pub accounts: HashMap<String, String>,
-    /// Legacy v9.2 alias for `accounts`.
+    /// Устаревший псевдоним v9.2 для поля `accounts`.
     pub authed_accounts: HashMap<String, String>,
-    /// Map from account name to assigned role.
+    /// Карта соответствия логина аккаунта и назначенной роли.
     pub roles: HashMap<String, String>,
-    /// Cached player positions keyed by client ID.
+    /// Кэш позиций игроков по идентификатору клиента (CID).
     pub states: HashMap<i32, PlayerPos>,
-    /// Client ID of the player who disconnected in the most recent `Event::Leave`.
+    /// Идентификатор клиента (CID) игрока, вышедшего в последнем событии `Event::Leave`.
     pub last_leave_cid: Option<i32>,
     permissions: HashSet<String>,
     on_load_cb: Option<LifecycleHook>,
@@ -367,9 +367,9 @@ impl Default for ServerApi {
 }
 
 impl ServerApi {
-    /// Creates a new `ServerApi` instance and announces SDK version to manager.
+    /// Создаёт новый экземпляр `ServerApi` и сообщает версию SDK менеджеру плагинов.
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let api = ServerApi::new();
@@ -398,9 +398,9 @@ impl ServerApi {
         api
     }
 
-    /// Sends a raw command line to the plugin manager over stdout.
+    /// Отправляет сырую строку команды менеджеру плагинов через stdout.
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let api = ServerApi::new();
@@ -412,9 +412,9 @@ impl ServerApi {
         let _ = out.flush();
     }
 
-    /// Declares plugin API version and required capability permissions.
+    /// Объявляет версию API плагина и требуемые разрешения.
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let mut api = ServerApi::new();
@@ -429,9 +429,9 @@ impl ServerApi {
         self.raw(&format!("@PM MANIFEST|{}|{}", api_ver, perms.join(",")));
     }
 
-    /// Returns `true` if the plugin declared the given permission in its manifest.
+    /// Возвращает `true`, если плагин объявил указанное разрешение в манифесте.
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let mut api = ServerApi::new();
@@ -443,18 +443,18 @@ impl ServerApi {
         self.permissions.contains(perm)
     }
 
-    /// Loads or creates plugin .cfg file.
+    /// Загружает или создаёт конфигурационный файл `.cfg` плагина.
     pub fn load_config<C: PluginConfig>(&self, n: &str) -> C { C::load_or_create(n) }
 
-    /// Registers a chat command and help description.
+    /// Регистрирует чат-команду и её описание для справки.
     pub fn register_plugin(&mut self, cmd: &str, desc: &str) {
         crate::log::init(cmd);
         self.raw(&format!("@REG_CMD {}|{}", cmd, desc));
     }
 
-    /// Sets plugin execution priority (`High`, `Normal`, `Low`).
+    /// Устанавливает приоритет выполнения плагина (`High`, `Normal`, `Low`).
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let api = ServerApi::new();
@@ -469,9 +469,9 @@ impl ServerApi {
         self.raw(&format!("@PM PRIORITY|{}", tag));
     }
 
-    /// Enables or disables 100ms `Event::FastTick` delivery.
+    /// Включает или отключает доставку высокочастотного тика `Event::FastTick` (100 мс).
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let api = ServerApi::new();
@@ -481,9 +481,9 @@ impl ServerApi {
         self.raw(&format!("@PM FASTTICK|{}", if enabled { 1 } else { 0 }));
     }
 
-    /// Enables or disables periodic player position polling into `api.states`.
+    /// Включает или отключает периодический опрос координат игроков в `api.states`.
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let api = ServerApi::new();
@@ -493,9 +493,9 @@ impl ServerApi {
         self.raw(&format!("@TRACK_POS {}", if enabled { 1 } else { 0 }));
     }
 
-    /// Registers a callback invoked on initial plugin load.
+    /// Регистрирует обработчик, вызываемый при первичной загрузке плагина.
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let mut api = ServerApi::new();
@@ -505,9 +505,9 @@ impl ServerApi {
         self.on_load_cb = Some(Box::new(cb));
     }
 
-    /// Registers a callback invoked when the plugin is hot-reloaded.
+    /// Регистрирует обработчик, вызываемый при горячей перезагрузке плагина.
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let mut api = ServerApi::new();
@@ -517,9 +517,9 @@ impl ServerApi {
         self.on_reload_cb = Some(Box::new(cb));
     }
 
-    /// Registers a callback invoked after state rollback on plugin unload.
+    /// Регистрирует обработчик, вызываемый при выгрузке плагина после отката состояния.
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let mut api = ServerApi::new();
@@ -529,9 +529,9 @@ impl ServerApi {
         self.on_unload_cb = Some(Box::new(cb));
     }
 
-    /// Resolves a player's nickname to a typed `PlayerId`.
+    /// Находит типизированный `PlayerId` игрока по его никнейму.
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let mut api = ServerApi::new();
@@ -542,9 +542,9 @@ impl ServerApi {
         self.cids.get(nick).copied().map(PlayerId)
     }
 
-    /// Broadcasts a public chat message to all players.
+    /// Отправляет сообщение в общий чат всем игрокам.
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let api = ServerApi::new();
@@ -554,9 +554,9 @@ impl ServerApi {
         self.raw(&format!("say \"{}\"", msg.replace('"', "'")));
     }
 
-    /// Sends a private whisper message to a player by nickname.
+    /// Отправляет личное сообщение (шёпот) игроку по никнейму.
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let api = ServerApi::new();
@@ -570,9 +570,9 @@ impl ServerApi {
         ));
     }
 
-    /// Sends a private whisper message to a typed `PlayerId`.
+    /// Отправляет личное сообщение (шёпот) игроку по типизированному `PlayerId`.
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let api = ServerApi::new();
@@ -584,9 +584,9 @@ impl ServerApi {
         }
     }
 
-    /// Sends a direct message over inter-plugin IPC to `target` plugin.
+    /// Отправляет прямое межплагинное IPC-сообщение плагину `target`.
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let api = ServerApi::new();
@@ -596,9 +596,9 @@ impl ServerApi {
         self.raw(&format!("@TO {}|{}", target, payload));
     }
 
-    /// Broadcasts a payload over the global inter-plugin bus.
+    /// Рассылает данные по общей межплагинной шине IPC.
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let api = ServerApi::new();
@@ -608,9 +608,9 @@ impl ServerApi {
         self.raw(&format!("@BUS {}", payload));
     }
 
-    /// Sets a raw key-value entry in `plugins_kv.db`.
+    /// Записывает пару ключ-значение в `plugins_kv.db`.
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let api = ServerApi::new();
@@ -620,9 +620,9 @@ impl ServerApi {
         self.raw(&format!("@DB SET|{}|{}", key, val));
     }
 
-    /// Requests a key-value entry from `plugins_kv.db` (delivered via `Event::DbValue`).
+    /// Запрашивает значение по ключу из `plugins_kv.db` (ответ приходит в `Event::DbValue`).
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let api = ServerApi::new();
@@ -632,9 +632,9 @@ impl ServerApi {
         self.raw(&format!("@DB GET|{}|{}", req_id, key));
     }
 
-    /// Atomically adds `delta` to an integer key in `plugins_kv.db`.
+    /// Атомарно прибавляет `delta` к числовому ключу в `plugins_kv.db`.
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let api = ServerApi::new();
@@ -644,9 +644,9 @@ impl ServerApi {
         self.raw(&format!("@DB ADD|{}|{}", key, delta));
     }
 
-    /// Deletes a key from `plugins_kv.db`.
+    /// Удаляет ключ из `plugins_kv.db`.
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let api = ServerApi::new();
@@ -656,9 +656,9 @@ impl ServerApi {
         self.raw(&format!("@DB DEL|{}", key));
     }
 
-    /// Deletes all keys matching `prefix` from `plugins_kv.db`.
+    /// Удаляет все ключи с префиксом `prefix` из `plugins_kv.db`.
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let api = ServerApi::new();
@@ -668,9 +668,9 @@ impl ServerApi {
         self.raw(&format!("@DB DEL_PREFIX|{}", prefix));
     }
 
-    /// Queries all keys starting with `prefix` (delivered via `Event::DbList`).
+    /// Запрашивает все ключи с префиксом `prefix` (ответ приходит в `Event::DbList`).
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let api = ServerApi::new();
@@ -680,20 +680,20 @@ impl ServerApi {
         self.raw(&format!("@DB PREFIX|{}|{}", req_id, prefix));
     }
 
-    /// Sets a persistent HUD line in slot `1..=5` for a player.
+    /// Устанавливает постоянную строку HUD в слоте `1..=5` для игрока.
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let api = ServerApi::new();
     /// assert!(api.set_hud_line(PlayerId(0), 1, "Wave 1").is_ok());
     /// ```
-    /// Returns true if client verified as BestClient.
+    /// Возвращает `true`, если клиент подтверждён как BestClient.
     pub fn is_best_client(&self, cid: i32) -> bool {
         self.best_clients.contains(&cid)
     }
 
-    /// Sends custom system packet (MsgId 100) to a verified BestClient.
+    /// Отправляет пользовательский системный пакет (MsgId 100) подтверждённому клиенту BestClient.
     pub fn send_custom_packet(&self, cid: i32, kind: &str, payload: &str) {
         if self.best_clients.contains(&cid) {
             let clean_k: String = kind.chars().filter(|c| !c.is_whitespace() && *c != ';').collect();
@@ -704,7 +704,7 @@ impl ServerApi {
         }
     }
 
-    /// Updates a custom HUD slot line for the given player.
+    /// Обновляет строку в указанном слоте HUD для игрока.
     pub fn set_hud_line(&self, cid: PlayerId, slot: u8, text: &str) -> Result<(), SdkError> {
         if !cid.is_valid() {
             return Err(SdkError::InvalidCid(cid));
@@ -720,9 +720,9 @@ impl ServerApi {
         Ok(())
     }
 
-    /// Clears a HUD line slot `1..=5` for a player.
+    /// Очищает строку HUD в слоте `1..=5` для игрока.
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let api = ServerApi::new();
@@ -742,9 +742,9 @@ impl ServerApi {
         Ok(())
     }
 
-    /// Renders a UTF-8 progress bar (`█`/`░` + percentage) into HUD slot 4.
+    /// Отрисовывает UTF-8 полосу прогресса (`█`/`░` и проценты) в слоте HUD 4.
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let api = ServerApi::new();
@@ -773,9 +773,9 @@ impl ServerApi {
         self.set_hud_line(cid, 4, &bar)
     }
 
-    /// Spawns a custom server projectile tracked in the state registry.
+    /// Создаёт кастомный серверный снаряд, отслеживаемый в реестре состояния.
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let api = ServerApi::new();
@@ -797,9 +797,9 @@ impl ServerApi {
         Ok(())
     }
 
-    /// Despawns a previously spawned custom projectile by identifier.
+    /// Удаляет ранее созданный кастомный снаряд по его идентификатору.
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let api = ServerApi::new();
@@ -809,9 +809,9 @@ impl ServerApi {
         self.raw(&format!("despawn_proj {}", id));
     }
 
-    /// Overrides player movement inputs for the next tick (`force_input` capability).
+    /// Переопределяет ввод движения игрока на следующий тик (требуется разрешение `force_input`).
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let mut api = ServerApi::new();
@@ -845,9 +845,9 @@ impl ServerApi {
         Ok(())
     }
 
-    /// Clears forced movement input for a player (`force_input` capability).
+    /// Сбрасывает принудительный ввод движения для игрока (требуется разрешение `force_input`).
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let mut api = ServerApi::new();
@@ -867,9 +867,9 @@ impl ServerApi {
         Ok(())
     }
 
-    /// Atomically adds `delta` to an account-scoped numeric key (`account:key`).
+    /// Атомарно прибавляет `delta` к числовому ключу аккаунта (`account:key`).
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let api = ServerApi::new();
@@ -879,9 +879,9 @@ impl ServerApi {
         self.raw(&format!("@DB ADD_ACC|{}|{}|{}", account, key, delta));
     }
 
-    /// Atomically transfers `amount` between two accounts (status via `Event::DbValue`).
+    /// Атомарно переводит сумму `amount` между двумя аккаунтами (статус приходит в `Event::DbValue`).
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let api = ServerApi::new();
@@ -901,9 +901,9 @@ impl ServerApi {
         ));
     }
 
-    /// Persists a plugin-namespaced state value (`pstate:<plugin>:<key>`).
+    /// Сохраняет значение состояния в пространстве имён плагина (`pstate:<plugin>:<key>`).
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let api = ServerApi::new();
@@ -913,9 +913,9 @@ impl ServerApi {
         self.raw(&format!("@PSTATE SET|{}|{}", key, val));
     }
 
-    /// Reads a plugin-namespaced state value (delivered via `Event::DbValue`).
+    /// Читает значение состояния из пространства имён плагина (ответ приходит в `Event::DbValue`).
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let api = ServerApi::new();
@@ -925,9 +925,9 @@ impl ServerApi {
         self.raw(&format!("@PSTATE GET|{}|{}", req_id, key));
     }
 
-    /// Schedules a one-shot `Event::Scheduled { callback_id }` after `delay_ms`.
+    /// Планирует однократное событие `Event::Scheduled { callback_id }` через `delay_ms` мс.
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let api = ServerApi::new();
@@ -937,9 +937,9 @@ impl ServerApi {
         self.raw(&format!("@SCHED AFTER|{}|{}", delay_ms, callback_id));
     }
 
-    /// Schedules a repeating `Event::Scheduled { callback_id }` every `interval_ms`.
+    /// Планирует повторяющееся событие `Event::Scheduled { callback_id }` каждые `interval_ms` мс.
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let api = ServerApi::new();
@@ -949,9 +949,9 @@ impl ServerApi {
         self.raw(&format!("@SCHED EVERY|{}|{}", interval_ms, callback_id));
     }
 
-    /// Cancels a previously scheduled timer by `callback_id`.
+    /// Отменяет ранее запланированный таймер по `callback_id`.
     ///
-    /// # Examples
+    /// # Примеры
     /// ```
     /// use ddnet_sdk::prelude::*;
     /// let api = ServerApi::new();
@@ -961,9 +961,9 @@ impl ServerApi {
         self.raw(&format!("@SCHED CANCEL|{}", callback_id));
     }
 
-    /// Runs the main plugin event loop with panic isolation.
+    /// Запускает главный цикл обработки событий плагина с изоляцией паник.
     ///
-    /// # Examples
+    /// # Примеры
     /// ```no_run
     /// use ddnet_sdk::prelude::*;
     /// let api = ServerApi::new();
@@ -976,9 +976,9 @@ impl ServerApi {
         });
     }
 
-    /// Runs the main plugin event loop allowing event cancellation and panic isolation.
+    /// Запускает главный цикл обработки событий плагина с поддержкой отмены событий и изоляцией паник.
     ///
-    /// # Examples
+    /// # Примеры
     /// ```no_run
     /// use ddnet_sdk::prelude::*;
     /// let api = ServerApi::new();
@@ -1101,20 +1101,20 @@ impl ServerApi {
         }
     }
 
-    /// Sends a raw server console command (legacy v9.2 alias).
+    /// Отправляет сырую консольную команду сервера (устаревший псевдоним v9.2).
     pub fn cmd(&self, c: &str) {
         self.raw(c);
     }
-    /// Registers an admin-only plugin command (legacy v9.2 alias).
+    /// Регистрирует команду плагина только для администраторов (устаревший псевдоним v9.2).
     pub fn register_admin_plugin(&mut self, cmd: &str, desc: &str) {
         crate::log::init(cmd);
         self.raw(&format!("@REG_ADMIN {}|{}", cmd, desc));
     }
-    /// Registers a subcommand description (legacy v9.2 alias).
+    /// Регистрирует описание подкоманды (устаревший псевдоним v9.2).
     pub fn register_cmd(&mut self, cmd: &str, args: &str, desc: &str) {
         self.raw(&format!("@REG_SUB {}|{}|{}", cmd, args, desc));
     }
-    /// Checks whether a player holds a specific role.
+    /// Проверяет, имеет ли игрок указанную роль.
     pub fn has_role(&self, player: &str, role: &str) -> bool {
         self.accounts
             .get(player)
@@ -1122,62 +1122,62 @@ impl ServerApi {
             .map(|r| r.eq_ignore_ascii_case(role))
             .unwrap_or(false)
     }
-    /// Checks whether a player is staff (`owner`, `admin`, `mod`, `helper`).
+    /// Проверяет, относится ли игрок к персоналу (`owner`, `admin`, `mod`, `helper`).
     pub fn is_staff(&self, player: &str) -> bool {
         ["owner", "admin", "mod", "helper"]
             .iter()
             .any(|r| self.has_role(player, r))
     }
-    /// Broadcasts payload over global IPC bus (legacy v9.2 alias).
+    /// Рассылает данные по общей межплагинной шине IPC (устаревший псевдоним v9.2).
     pub fn broadcast_ipc(&self, payload: &str) {
         self.broadcast_bus(payload);
     }
-    /// Sends a broadcast banner to a single client ID.
+    /// Отправляет экранный баннер (broadcast) конкретному клиенту по CID.
     pub fn broadcast_to(&self, cid: i32, msg: &str) {
         self.raw(&format!("broadcast_to {} {}", cid, msg));
     }
-    /// Queries keys starting with prefix (legacy v9.2 alias).
+    /// Запрашивает ключи, начинающиеся с префикса (устаревший псевдоним v9.2).
     pub fn db_get_prefix(&self, req_id: &str, prefix: &str) {
         self.db_prefix(req_id, prefix);
     }
-    /// Requests immediate player state snapshot.
+    /// Запрашивает немедленный снимок состояния игрока.
     pub fn request_state(&self, cid: i32) {
         self.raw(&format!("get_state {}", cid));
     }
-    /// Resets player hook.
+    /// Сбрасывает крюк игрока.
     pub fn reset_hook(&self, cid: i32) {
         self.raw(&format!("reset_hook {}", cid));
     }
-    /// Plays a sound effect for a client ID (`-1` for all).
+    /// Проигрывает звуковой эффект для клиента по CID (`-1` — для всех).
     pub fn play_sound(&self, cid: i32, id: i32) {
         self.raw(&format!("play_sound {} {}", cid, id));
     }
-    /// Freezes or unfreezes a player for `secs` seconds.
+    /// Замораживает или размораживает игрока на `secs` секунд.
     pub fn set_freeze(&self, cid: i32, secs: i32) {
         self.raw(&format!("set_freeze {} {}", cid, secs));
     }
-    /// Sets player velocity.
+    /// Устанавливает вектор скорости игрока.
     pub fn set_vel(&self, cid: i32, vx: f32, vy: f32) {
         self.raw(&format!("set_vel {} {:.2} {:.2}", cid, vx, vy));
     }
-    /// Adds relative impulse (vx, vy) to player current velocity.
+    /// Добавляет импульс (vx, vy) к текущей скорости игрока.
     pub fn apply_impulse(&self, cid: i32, vx: f32, vy: f32) {
         self.raw(&format!("plugin_apply_impulse {} {:.2} {:.2}", cid, vx, vy));
     }
-    /// Sets player world position.
+    /// Телепортирует игрока в указанные мировые координаты.
     pub fn set_pos(&self, cid: i32, x: f32, y: f32) {
         self.raw(&format!("set_pos {} {:.1} {:.1}", cid, x, y));
     }
 
-    /// Gives a weapon ID (`0..=5`) to a player.
+    /// Выдаёт игроку оружие по идентификатору (`0..=5`).
     pub fn give_weapon(&self, cid: i32, w: i32) {
         self.raw(&format!("give_weapon {} {}", cid, w));
     }
-    /// Sets weapon ammo for a player.
+    /// Устанавливает количество патронов для оружия игрока.
     pub fn set_ammo(&self, cid: i32, w: i32, ammo: i32) {
         self.raw(&format!("set_ammo {} {} {}", cid, w, ammo));
     }
-    /// Toggles player invincibility.
+    /// Включает или отключает неуязвимость игрока.
     pub fn set_invincible(&self, cid: i32, on: bool) {
         self.raw(&format!(
             "plugin_set_invincible {} {}",
@@ -1185,7 +1185,7 @@ impl ServerApi {
             if on { 1 } else { 0 }
         ));
     }
-    /// Toggles endless jump for a player.
+    /// Включает или отключает бесконечные прыжки для игрока.
     pub fn set_endless_jump(&self, cid: i32, on: bool) {
         self.raw(&format!(
             "plugin_set_endless_jump {} {}",
@@ -1193,7 +1193,7 @@ impl ServerApi {
             if on { 1 } else { 0 }
         ));
     }
-    /// Toggles endless hook for a player.
+    /// Включает или отключает бесконечный крюк для игрока.
     pub fn set_endless_hook(&self, cid: i32, on: bool) {
         self.raw(&format!(
             "plugin_set_endless_hook {} {}",
@@ -1201,7 +1201,7 @@ impl ServerApi {
             if on { 1 } else { 0 }
         ));
     }
-    /// Sets a named player physics flag (`jetpack`, `collision`, `hammer_hit`, `hook_hit`).
+    /// Устанавливает физический флаг игрока (`jetpack`, `collision`, `hammer_hit`, `hook_hit`).
     pub fn set_phys(&self, cid: i32, key: &str, on: bool) {
         self.raw(&format!(
             "set_phys {} {} {}",
@@ -1210,7 +1210,7 @@ impl ServerApi {
             if on { 1 } else { 0 }
         ));
     }
-    /// Sets custom tee body/feet color.
+    /// Устанавливает пользовательский цвет тела и ног ти.
     pub fn set_color(&self, cid: i32, custom: bool, body: i32, feet: i32) {
         self.raw(&format!(
             "plugin_set_color {} {} {} {}",
@@ -1220,7 +1220,7 @@ impl ServerApi {
             feet
         ));
     }
-    /// Overrides `target` player's visible skin specifically for `viewer` (pass `""` to reset).
+    /// Подменяет видимый скин игрока `target` персонально для `viewer` (передайте `""` для сброса).
     pub fn set_skin_to(&self, viewer: i32, target: i32, skin: &str) {
         let clean: String = skin
             .chars()
@@ -1233,64 +1233,64 @@ impl ServerApi {
             self.raw(&format!("plugin_set_skin_to {} {} {}", viewer, target, clean));
         }
     }
-    /// Resets `target` player's visible skin for `viewer` back to their real skin.
+    /// Возвращает видимый скин игрока `target` для `viewer` к исходному.
     pub fn clear_skin_to(&self, viewer: i32, target: i32) {
         self.set_skin_to(viewer, target, "");
     }
-    /// Toggles VIP+ status for a player.
+    /// Включает или отключает статус VIP+ для игрока.
     pub fn set_vip_plus(&self, cid: i32, on: bool) {
         self.raw(&format!("set_vip_plus {} {}", cid, if on { 1 } else { 0 }));
     }
-    /// Force-kills a player character.
+    /// Принудительно убивает персонажа игрока.
     pub fn force_kill(&self, cid: i32) {
         self.raw(&format!("force_kill {}", cid));
     }
-    /// Kills `cid` credited to `killer` with `weapon`.
+    /// Убивает игрока `cid` с зачётом фрага убийце `killer` из оружия `weapon`.
     pub fn kill_by(&self, cid: i32, killer: i32, w: i32) {
         self.raw(&format!("kill_by {} {} {}", cid, killer, w));
     }
-    /// Spawns a visual particle effect (`explosion`, `hammer`, `damage`).
+    /// Создаёт визуальный эффект частиц (`explosion`, `hammer`, `damage`).
     pub fn spawn_fx(&self, kind: &str, x: f32, y: f32) {
         self.raw(&format!("spawn_fx {} {:.1} {:.1}", kind, x, y));
     }
-    /// Spawns a standard laser beam.
+    /// Создаёт стандартный лазерный луч.
     pub fn spawn_laser(&self, x1: f32, y1: f32, x2: f32, y2: f32) {
         self.raw(&format!(
             "spawn_laser {:.1} {:.1} {:.1} {:.1}",
             x1, y1, x2, y2
         ));
     }
-    /// Spawns a styled laser beam.
+    /// Создаёт стилизованный лазерный луч.
     pub fn spawn_laser_ex(&self, x1: f32, y1: f32, x2: f32, y2: f32, kind: i32) {
         self.raw(&format!(
             "spawn_laser_ex {:.1} {:.1} {:.1} {:.1} {}",
             x1, y1, x2, y2, kind
         ));
     }
-    /// Spawns a persistent visual laser with ID.
+    /// Создаёт постоянный визуальный лазер OnSnap с указанным ID.
     pub fn spawn_visual_laser(&self, id: i32, x1: f32, y1: f32, x2: f32, y2: f32, kind: i32) {
         self.raw(&format!(
             "spawn_visual_laser {} {:.1} {:.1} {:.1} {:.1} {}",
             id, x1, y1, x2, y2, kind
         ));
     }
-    /// Clears all persistent visual lasers.
-    /// Removes a persistent visual laser by ID.
+    /// Удаляет все постоянные визуальные лазеры.
+    /// Удаляет постоянный визуальный лазер по его ID.
     pub fn remove_visual_laser(&self, id: i32) {
         self.raw(&format!("remove_visual_laser {}", id));
     }
-    /// Clears all persistent visual lasers spawned by this plugin.
+    /// Удаляет все постоянные визуальные лазеры этого плагина.
     pub fn clear_visual_lasers(&self) {
         self.raw("clear_visual_lasers");
     }
-    /// Spawns a persistent visual pickup with ID.
+    /// Создаёт постоянный визуальный пикап OnSnap с указанным ID.
     pub fn spawn_visual_pickup(&self, id: i32, kind: i32, sub: i32, x: f32, y: f32) {
         self.raw(&format!(
             "spawn_visual_pickup {} {} {} {:.1} {:.1}",
             id, kind, sub, x, y
         ));
     }
-    /// Spawns a persistent visual pickup attached to a player CID.
+    /// Создаёт постоянный визуальный пикап, привязанный к игроку по CID.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_visual_pickup_follow(
         &self,
@@ -1307,36 +1307,36 @@ impl ServerApi {
             id, kind, sub, cid, off_x, off_y, bob_amp
         ));
     }
-    /// Changes the active server map via `change_map "<map>"`.
+    /// Меняет активную карту сервера командой `change_map "<map>"`.
     pub fn change_map(&self, map: &str) {
         let safe: String = map.chars().filter(|&c| c != '"' && c != '\n' && c != '\r').collect();
         if !safe.is_empty() {
             self.raw(&format!(r#"change_map "{}""#, safe));
         }
     }
-    /// Sets scoreboard mode (`0` = Race/Time, `1` = Points, `2` = Team Points).
+    /// Устанавливает режим таблицы очков (`0` = гонка/время, `1` = очки, `2` = командные очки).
     pub fn set_gamemode(&self, mode: i32) { self.raw(&format!("set_gamemode {}", mode)); }
-    /// Sets player scoreboard points by nickname.
+    /// Устанавливает очки игрока в таблице по никнейму.
     pub fn set_player_score_name(&self, name: &str, score: i32) { self.raw(&format!(r#"set_player_score "{}" {}"#, name, score)); }
-    /// Sets freeze-tile auto-kill timeout in seconds (`0` = off).
+    /// Устанавливает таймаут автосмерти в тайле заморозки в секундах (`0` = выкл).
     pub fn set_freeze_autokill(&self, sec: i32) { self.raw(&format!("set_freeze_autokill {}", sec)); }
-    /// Sets laser freeze duration in seconds (`0` = off).
+    /// Устанавливает длительность заморозки лазером в секундах (`0` = выкл).
     pub fn set_laser_freeze(&self, sec: i32) { self.raw(&format!("set_laser_freeze {}", sec)); }
-    /// Enables or disables teammate-only hammer unfreeze.
+    /// Включает или отключает разморозку молотом только для союзников.
     pub fn set_hammer_team_unfreeze(&self, on: bool) { self.raw(&format!("set_hammer_team_unfreeze {}", if on { 1 } else { 0 })); }
-    /// Enables or disables FNG spawn loadout (hammer + laser only).
+    /// Включает или отключает стартовый набор FNG (только молот и лазер).
     pub fn set_fng_weapons(&self, on: bool) { self.raw(&format!("set_fng_weapons {}", if on { 1 } else { 0 })); }
-    /// Sets a player's integer scoreboard points.
+    /// Устанавливает целочисленные очки игрока в таблице.
     pub fn set_player_score(&self, cid: i32, score: i32) { self.raw(&format!("set_player_score {} {}", cid, score)); }
-    /// Sets a player's team (`0` = Red, `1` = Blue, `-1` = Spectators).
+    /// Переводит игрока в команду (`0` = Red, `1` = Blue, `-1` = Наблюдатели).
     pub fn set_player_team(&self, cid: i32, team: i32) { self.raw(&format!("set_player_team {} {}", cid, team)); }
-    /// Sets Red and Blue team scores.
+    /// Устанавливает счёт команд Red и Blue.
     pub fn set_team_score(&self, red: i32, blue: i32) { self.raw(&format!("set_team_score {} {}", red, blue)); }
-    /// Removes a persistent visual pickup by ID.
+    /// Удаляет постоянный визуальный пикап по его ID.
     pub fn remove_visual_pickup(&self, id: i32) {
         self.raw(&format!("remove_visual_pickup {}", id));
     }
-    /// Spawns a persistent visual tee (ID 0..63) in OnSnap.
+    /// Создаёт постоянного визуального ти (ID 0..63) в OnSnap.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_visual_tee(&self, id: i32, x: f32, y: f32, skin: &str, body: i32, feet: i32, freeze: i32) {
         self.raw(&format!(
@@ -1344,15 +1344,15 @@ impl ServerApi {
             id, x, y, skin.replace('"', ""), body, feet, freeze
         ));
     }
-    /// Removes a persistent visual tee by ID.
+    /// Удаляет постоянного визуального ти по его ID.
     pub fn remove_visual_tee(&self, id: i32) {
         self.raw(&format!("remove_visual_tee {}", id));
     }
-    /// Clears all persistent visual tees.
+    /// Удаляет всех постоянных визуальных ти этого плагина.
     pub fn clear_visual_tees(&self) {
         self.raw("clear_visual_tees");
     }
-    /// Spawns persistent vector laser text in OnSnap (ID 0..31, 0 FX/s).
+    /// Создаёт постоянный векторный лазерный текст в OnSnap (ID 0..31, 0 FX/с).
     pub fn spawn_visual_text(&self, id: i32, x: f32, y: f32, scale: f32, kind: i32, text: &str) {
         let clean = text.replace('"', "");
         self.raw(&format!(
@@ -1360,11 +1360,11 @@ impl ServerApi {
             id, x, y, scale, kind, clean
         ));
     }
-    /// Removes a persistent visual text by ID.
+    /// Удаляет постоянный векторный текст по его ID.
     pub fn remove_visual_text(&self, id: i32) {
         self.raw(&format!("remove_visual_text {}", id));
     }
-    /// Clears all persistent visual texts of this plugin.
+    /// Удаляет все постоянные векторные тексты этого плагина.
     pub fn clear_visual_texts(&self) {
         self.raw("clear_visual_texts");
     }
@@ -1689,7 +1689,7 @@ impl ServerApi {
     }
 }
 
-/// Declares a DDNet++ plugin entry point, registration, config, state, and event loop.
+/// Объявляет точку входа плагина DDNetPR, регистрацию, конфигурацию, состояние и цикл событий.
 #[macro_export]
 macro_rules! plugin {
     (name: $n:expr, desc: $d:expr, $(admin: $a:expr,)? $(priority: $p:expr,)? $(cmds: [ $( ($c:expr, $ca:expr, $cd:expr) ),* $(,)? ],)? handler: $h:expr $(,)?) => {

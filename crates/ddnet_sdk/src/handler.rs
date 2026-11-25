@@ -1,71 +1,71 @@
 use crate::{Event, EventAction, PlayerPos, ServerApi};
 
-/// Trait-based event dispatcher with default no-op handlers for every Event variant.
+/// Диспетчер событий на основе трейта с пустыми обработчиками по умолчанию для каждого варианта Event.
 #[allow(clippy::too_many_arguments)]
 pub trait EventHandler {
-    /// Called when a player joins the server.
+    /// Вызывается при входе игрока на сервер.
     fn on_join(&mut self, _api: &mut ServerApi, _player: String) {}
-    /// Called when a player leaves the server.
+    /// Вызывается при выходе игрока с сервера.
     fn on_leave(&mut self, _api: &mut ServerApi, _player: String) {}
-    /// Called when a player changes team (`0` = Red, `1` = Blue, `-1` = Spectator).
+    /// Вызывается при смене команды игрока (`0` = Red, `1` = Blue, `-1` = Наблюдатель).
     fn on_team_change(&mut self, _api: &mut ServerApi, _cid: i32, _player: String, _team: i32) {}
-    /// Called when a player changes nickname.
+    /// Вызывается при смене ника игрока.
     fn on_rename(&mut self, _api: &mut ServerApi, _old: String, _new: String) {}
-    /// Called on chat message; return EventAction::Cancel to block propagation.
+    /// Вызывается при сообщении в чат; верните EventAction::Cancel, чтобы заблокировать дальнейшую обработку.
     fn on_chat(&mut self, _api: &mut ServerApi, _team: i32, _player: String, _message: String) -> EventAction {
         EventAction::Pass
     }
-    /// Called when BestClient handshake is detected.
+    /// Вызывается при обнаружении рукопожатия BestClient.
     fn on_best_client(&mut self, _api: &mut ServerApi, _cid: i32, _version: String) {}
-    /// Called when a player logs into an account.
+    /// Вызывается при входе игрока в аккаунт.
     fn on_auth(&mut self, _api: &mut ServerApi, _cid: i32, _player: String, _account: String) {}
-    /// Called when an account role is assigned or updated.
+    /// Вызывается при назначении или обновлении роли аккаунта.
     fn on_role(&mut self, _api: &mut ServerApi, _account: String, _role: String) {}
-    /// Called once per second.
+    /// Вызывается один раз в секунду.
     fn on_tick(&mut self, _api: &mut ServerApi, _uptime_sec: u64) {}
-    /// Called every 100ms when fast tick is enabled.
+    /// Вызывается каждые 100 мс, если включён быстрый тик.
     fn on_fast_tick(&mut self, _api: &mut ServerApi, _uptime_ms: u64) {}
-    /// Called when a scheduled timer fires.
+    /// Вызывается при срабатывании запланированного таймера.
     fn on_scheduled(&mut self, _api: &mut ServerApi, _callback_id: u64) {}
-    /// Called when an inter-plugin IPC message arrives.
+    /// Вызывается при получении межплагинного IPC-сообщения.
     fn on_ipc(&mut self, _api: &mut ServerApi, _from: String, _payload: String) {}
-    /// Called when a DB key-value lookup finishes.
+    /// Вызывается при получении значения по ключу из БД.
     fn on_db_value(&mut self, _api: &mut ServerApi, _req_id: String, _value: String) {}
-    /// Called when a DB prefix scan finishes.
+    /// Вызывается при завершении поиска по префиксу в БД.
     fn on_db_list(&mut self, _api: &mut ServerApi, _req_id: String, _items: Vec<(String, String)>) {}
-    /// Called on player input snapshot.
+    /// Вызывается при получении снимка ввода игрока.
     fn on_input(&mut self, _api: &mut ServerApi, _cid: i32, _dir: i32, _jump: i32, _hook: i32, _fire: i32, _target_x: i32, _target_y: i32) {}
-    /// Called on legacy online list update.
+    /// Вызывается при устаревшем обновлении списка онлайн-игроков.
     fn on_online(&mut self, _api: &mut ServerApi, _players: Vec<String>) {}
-    /// Called on legacy DB result event.
+    /// Вызывается при устаревшем событии результата БД.
     fn on_db_result(&mut self, _api: &mut ServerApi, _req_id: String, _value: String) {}
-    /// Called on legacy detailed player state snapshot.
+    /// Вызывается при устаревшем детальном снимке состояния игрока.
     fn on_player_state(&mut self, _api: &mut ServerApi, _cid: i32, _player: String, _x: f32, _y: f32, _vx: f32, _vy: f32, _frozen: i32, _weapon: i32) {}
-    /// Called when player state snapshot updates.
+    /// Вызывается при обновлении снимка состояния игрока.
     fn on_state(&mut self, _api: &mut ServerApi, _cid: i32, _pos: PlayerPos) {}
-    /// Called when a player kills another player.
+    /// Вызывается при убийстве одного игрока другим.
     fn on_kill(&mut self, _api: &mut ServerApi, _killer: String, _victim: String, _weapon: i32) {}
-    /// Called when a player dies.
+    /// Вызывается при смерти игрока.
     fn on_death(&mut self, _api: &mut ServerApi, _cid: i32, _killer: i32, _weapon: i32) {}
-    /// Called when a player takes damage.
+    /// Вызывается при получении урона игроком.
     fn on_damage(&mut self, _api: &mut ServerApi, _cid: i32, _attacker: i32, _amount: i32, _weapon: i32) {}
-    /// Called when a player finishes a map/race.
+    /// Вызывается при финише игрока на карте/гонке.
     fn on_finish(&mut self, _api: &mut ServerApi, _cid: i32, _time: f32) {}
-    /// Called when a player touches a special tile.
+    /// Вызывается при касании игроком специального тайла.
     fn on_tile(&mut self, _api: &mut ServerApi, _cid: i32, _tile: i32, _x: i32, _y: i32) {}
-    /// Called when a weapon hits a player.
+    /// Вызывается при попадании оружия в игрока.
     fn on_weapon_hit(&mut self, _api: &mut ServerApi, _attacker: i32, _victim: i32, _weapon: i32) {}
-    /// Called when a hammer hits a player.
+    /// Вызывается при ударе молотом по игроку.
     fn on_hammer_hit(&mut self, _api: &mut ServerApi, _attacker: String, _victim: String) {}
-    /// Called when a player collects a pickup.
+    /// Вызывается при подборе предмета игроком.
     fn on_pickup(&mut self, _api: &mut ServerApi, _cid: i32, _kind: i32) {}
-    /// Called when a player switches active weapon.
+    /// Вызывается при переключении активного оружия игроком.
     fn on_weapon_change(&mut self, _api: &mut ServerApi, _cid: i32, _old: i32, _new: i32) {}
-    /// Called when a player hook attaches to a tile or another player.
+    /// Вызывается при зацепе крюка игрока за тайл или другого игрока.
     fn on_hook_attach(&mut self, _api: &mut ServerApi, _cid: i32, _hooked_cid: Option<i32>, _pos: crate::dx::Vec2) {}
-    /// Called when a player hook detaches.
+    /// Вызывается при отцеплении крюка игрока.
     fn on_hook_detach(&mut self, _api: &mut ServerApi, _cid: i32, _prev_hooked_cid: Option<i32>) {}
-    /// Dispatches a raw Event into the corresponding typed handler method.
+    /// Перенаправляет сырое событие Event в соответствующий типизированный метод обработчика.
     fn dispatch(&mut self, api: &mut ServerApi, ev: Event) -> EventAction {
         match ev {
             Event::Join { player } => self.on_join(api, player),
@@ -108,7 +108,7 @@ pub trait EventHandler {
 }
 
 impl ServerApi {
-    /// Runs the plugin event loop using a stateful EventHandler implementation.
+    /// Запускает цикл событий плагина с использованием реализации EventHandler.
     pub fn run_handler<H: EventHandler + 'static>(self, mut handler: H) {
         self.run_intercept(move |api, ev| handler.dispatch(api, ev));
     }
