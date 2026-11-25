@@ -123,6 +123,7 @@ fn main() {
                 api.whisper(&asker, &format!("[Персонал] {}", if staff.is_empty() { "Пусто".into() } else { staff.join(" | ") }));
             }
         }
+        // Обработка ответов из key-value базы данных для проверки ролей персонала
         Event::DbValue { req_id, value } => {
             if let Some(q) = queue.remove(&req_id) {
                 let role = Role::from_str(&value);

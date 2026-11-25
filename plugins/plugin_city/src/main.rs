@@ -152,6 +152,7 @@ fn main() {
                 }
             }
         }
+        // Обработка ответов из key-value базы данных (баланс, ставки !dice, переводы !pay)
         Event::DbValue { req_id, value } => {
             if let Some(act) = pending.remove(&req_id) {
                 let cur: i64 = value.parse().unwrap_or(0);
