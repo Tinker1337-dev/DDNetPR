@@ -99,7 +99,7 @@ index 52fa341f0..5426460da 100644
  
  void CGameContext::ConSetEyeEmote(IConsole::IResult *pResult,
 diff --git a/src/game/server/entities/character.cpp b/src/game/server/entities/character.cpp
-index 552fe95b3..b973aed69 100644
+index 552fe95b3..5b594824f 100644
 --- a/src/game/server/entities/character.cpp
 +++ b/src/game/server/entities/character.cpp
 @@ -86,6 +86,8 @@ bool CCharacter::Spawn(CPlayer *pPlayer, vec2 Pos)
@@ -111,7 +111,29 @@ index 552fe95b3..b973aed69 100644
  	m_QueuedWeapon = -1;
  	m_LastRefillJumps = false;
  	m_LastPenalty = false;
-@@ -169,12 +171,18 @@ void CCharacter::Destroy()
+@@ -122,9 +124,20 @@ bool CCharacter::Spawn(CPlayer *pPlayer, vec2 Pos)
+ 	m_Alive = true;
+ 
+ 	GameServer()->m_pController->OnCharacterSpawn(this);
+-
++	m_LastFngFreezer = -1;
++	m_LastFngFreezeTick = 0;
++	m_LastAttacker = -1;
++	m_LastAttackTick = 0;
++	m_InFreezeTile = false;
+ 	DDRaceInit();
+ 
++	if(GameServer()->m_pController->m_PluginFngWeapons)
++	{
++		GiveWeapon(WEAPON_GUN, true);
++		GiveWeapon(WEAPON_LASER, false);
++		SetActiveWeapon(WEAPON_LASER);
++	}
++
+ 	m_TuneZone = TuneZone;
+ 	m_TuneZoneOld = -1; // no zone leave msg on spawn
+ 	m_NeededFaketuning = 0; // reset fake tunings on respawn and send the client
+@@ -169,12 +182,18 @@ void CCharacter::Destroy()
  
  void CCharacter::SetWeapon(int W)
  {
@@ -131,7 +153,7 @@ index 552fe95b3..b973aed69 100644
  	GameServer()->CreateSound(m_Pos, SOUND_WEAPON_SWITCH, TeamMask());
  
  	if(m_Core.m_ActiveWeapon < 0 || m_Core.m_ActiveWeapon >= NUM_WEAPONS)
-@@ -480,6 +488,8 @@ void CCharacter::FireWeapon()
+@@ -480,6 +499,8 @@ void CCharacter::FireWeapon()
  	}
  
  	DoWeaponSwitch();
@@ -140,7 +162,7 @@ index 552fe95b3..b973aed69 100644
  	vec2 MouseTarget = vec2(m_LatestInput.m_TargetX, m_LatestInput.m_TargetY);
  	vec2 Direction = normalize(MouseTarget);
  
-@@ -556,6 +566,7 @@ void CCharacter::FireWeapon()
+@@ -556,6 +577,7 @@ void CCharacter::FireWeapon()
  			if((pTarget == this || (pTarget->IsAlive() && !CanCollide(pTarget->GetPlayer()->GetCid()))))
  				continue;
  
@@ -148,7 +170,31 @@ index 552fe95b3..b973aed69 100644
  			// set their velocity to fast upward (for now)
  			if(length(pTarget->m_Pos - ProjStartPos) > 0.0f)
  				GameServer()->CreateHammerHit(pTarget->m_Pos - normalize(pTarget->m_Pos - ProjStartPos) * GetProximityRadius() * 0.5f, TeamMask());
-@@ -810,6 +821,16 @@ void CCharacter::OnDirectInput(const CNetObj_PlayerInput *pNewInput)
+@@ -577,12 +599,22 @@ void CCharacter::FireWeapon()
+ 			pTarget->TakeDamage((vec2(0.f, -1.0f) + Temp) * Strength, g_pData->m_Weapons.m_Hammer.m_pBase->m_Damage,
+ 				m_pPlayer->GetCid(), m_Core.m_ActiveWeapon);
+ 
+-			if(!pTarget->m_pPlayer->m_RconFreeze && !m_pPlayer->m_IsInstaModeFng)
++			if(GameServer()->m_pController->m_PluginHammerTeamUnfreeze)
++			{
++				if(pTarget->GetPlayer()->GetTeam() == m_pPlayer->GetTeam())
++				{
++					pTarget->Unfreeze();
++					pTarget->m_LastFngFreezer = -1;
++				}
++			}
++			else if(!pTarget->m_pPlayer->m_RconFreeze && !m_pPlayer->m_IsInstaModeFng)
+ 				pTarget->Unfreeze();
+ 
+ 			if(m_FreezeHammer) //ddnet++
+ 				pTarget->Freeze();
+ 
++			pTarget->m_LastAttacker = m_pPlayer->GetCid();
++			pTarget->m_LastAttackTick = Server()->Tick();
+ 			Antibot()->OnHammerHit(m_pPlayer->GetCid(), pTarget->GetPlayer()->GetCid());
+ 
+ 			Hits++;
+@@ -810,6 +842,16 @@ void CCharacter::OnDirectInput(const CNetObj_PlayerInput *pNewInput)
  		m_LatestInput.m_TargetY = -1;
  
  	Antibot()->OnDirectInput(m_pPlayer->GetCid());
@@ -165,7 +211,7 @@ index 552fe95b3..b973aed69 100644
  
  	if(m_NumInputs > 1 && m_pPlayer->GetTeam() != TEAM_SPECTATORS)
  	{
-@@ -870,7 +891,16 @@ void CCharacter::PreTick()
+@@ -870,7 +912,16 @@ void CCharacter::PreTick()
  
  	Antibot()->OnCharacterTick(m_pPlayer->GetCid());
  
@@ -182,7 +228,7 @@ index 552fe95b3..b973aed69 100644
  	m_Core.Tick(true, !g_Config.m_SvNoWeakHook);
  }
  
-@@ -908,6 +938,18 @@ void CCharacter::Tick()
+@@ -908,6 +959,18 @@ void CCharacter::Tick()
  		}
  	}
  
@@ -201,7 +247,7 @@ index 552fe95b3..b973aed69 100644
  	// Previnput
  	m_PrevInput = m_Input;
  
-@@ -933,7 +975,23 @@ void CCharacter::TickDeferred()
+@@ -933,7 +996,23 @@ void CCharacter::TickDeferred()
  	bool StuckBefore = Collision()->TestBox(m_Core.m_Pos, CCharacterCore::PhysicalSizeVec2());
  
  	m_Core.m_Id = m_pPlayer->GetCid();
@@ -226,7 +272,7 @@ index 552fe95b3..b973aed69 100644
  	bool StuckAfterMove = Collision()->TestBox(m_Core.m_Pos, CCharacterCore::PhysicalSizeVec2());
  	m_Core.Quantize();
  	bool StuckAfterQuant = Collision()->TestBox(m_Core.m_Pos, CCharacterCore::PhysicalSizeVec2());
-@@ -1077,6 +1135,7 @@ void CCharacter::StopRecording()
+@@ -1077,6 +1156,7 @@ void CCharacter::StopRecording()
  
  void CCharacter::Die(int Killer, int Weapon, bool SendKillMsg, bool FngScore)
  {
@@ -234,7 +280,7 @@ index 552fe95b3..b973aed69 100644
  	// ddnet-insta death handler
  	GameServer()->m_pController->OnCharacterDeathImpl(this, Killer, Weapon, SendKillMsg);
  
-@@ -1090,14 +1149,18 @@ bool CCharacter::TakeDamage(vec2 Force, int Dmg, int From, int Weapon)
+@@ -1090,14 +1170,18 @@ bool CCharacter::TakeDamage(vec2 Force, int Dmg, int From, int Weapon)
  	// ddnet-insta
  	if(GameServer()->m_pController->OnCharacterTakeDamage(Force, Dmg, From, Weapon, *this))
  		return false;
@@ -255,7 +301,7 @@ index 552fe95b3..b973aed69 100644
  
  	return true;
  }
-@@ -1296,6 +1359,8 @@ bool CCharacter::CanSnapCharacter(int SnappingClient)
+@@ -1296,6 +1380,8 @@ bool CCharacter::CanSnapCharacter(int SnappingClient)
  
  	CCharacter *pSnapChar = GameServer()->GetPlayerChar(SnappingClient);
  	CPlayer *pSnapPlayer = GameServer()->m_apPlayers[SnappingClient];
@@ -264,7 +310,101 @@ index 552fe95b3..b973aed69 100644
  
  	if(pSnapPlayer->GetTeam() == TEAM_SPECTATORS || pSnapPlayer->IsPaused())
  	{
-@@ -1726,6 +1791,18 @@ void CCharacter::HandleTiles(int Index)
+@@ -1422,7 +1508,7 @@ void CCharacter::Snap(int SnappingClient)
+ 	if(m_Core.m_LiveFrozen)
+ 		DDNetCharacter.m_Flags |= CHARACTERFLAG_MOVEMENTS_DISABLED;
+ 
+-	DDNetCharacter.m_FreezeEnd = m_Core.m_DeepFrozen ? -1 : (m_FreezeTime == 0 ? 0 : Server()->Tick() + m_FreezeTime);
++	DDNetCharacter.m_FreezeEnd = (m_Core.m_DeepFrozen || (GameServer()->m_pController->m_PluginLaserFreezeSec > 0 && m_FreezeTime > 0)) ? -1 : (m_FreezeTime == 0 ? 0 : Server()->Tick() + m_FreezeTime);
+ 	DDNetCharacter.m_Jumps = m_Core.m_Jumps;
+ 	DDNetCharacter.m_TeleCheckpoint = m_TeleCheckpoint;
+ 
+@@ -1582,10 +1668,83 @@ void CCharacter::HandleSkippableTiles(int Index)
+ 		}
+ 		else
+ 		{
+-			Die(m_pPlayer->GetCid(), WEAPON_WORLD);
++			int Killer = m_pPlayer->GetCid();
++			int Wpn = WEAPON_WORLD;
++			if(GameServer()->m_pController->m_PluginFng && m_LastFngFreezer >= 0 && m_LastFngFreezer != Killer && GameServer()->m_apPlayers[m_LastFngFreezer])
++			{
++				Killer = m_LastFngFreezer;
++				Wpn = WEAPON_LASER;
++			}
++			Die(Killer, Wpn);
++			return;
++		}
++	}
++
++	if(m_Core.HookedPlayer() >= 0 && m_Core.HookedPlayer() < MAX_CLIENTS && GameServer()->GetPlayerChar(m_Core.HookedPlayer()))
++	{
++		CCharacter *pHooked = GameServer()->GetPlayerChar(m_Core.HookedPlayer());
++		pHooked->m_LastAttacker = m_pPlayer->GetCid();
++		pHooked->m_LastAttackTick = Server()->Tick();
++	}
++	bool AtFreezeTile = (m_TileIndex == TILE_FREEZE) || (m_TileFIndex == TILE_FREEZE);
++	if(!AtFreezeTile)
++	{
++		m_InFreezeTile = false;
++		m_LastFngFreezeTick = 0;
++	}
++	if(m_FreezeTime > 0 && m_InFreezeTile)
++	{
++		if(m_LastFngFreezeTick == 0)
++			m_LastFngFreezeTick = Server()->Tick();
++		int Mode = GameServer()->m_pController->m_PluginMode;
++		bool IsFng = GameServer()->m_pController->m_PluginFng;
++		int LimitSec = GameServer()->m_pController->m_PluginFreezeAutokillSec;
++		int ElapsedTicks = Server()->Tick() - m_LastFngFreezeTick;
++		if(LimitSec > 0 && ElapsedTicks > 0 && ElapsedTicks % Server()->TickSpeed() == 0)
++		{
++			int SecLeft = LimitSec - (ElapsedTicks / Server()->TickSpeed());
++			if(SecLeft > 0)
++			{
++				char aBuf[64];
++				str_format(aBuf, sizeof(aBuf), IsFng ? "Фриз: %d сек..." : "Автокилл во фризе: %d сек...", SecLeft);
++				GameServer()->SendBroadcast(aBuf, m_pPlayer->GetCid());
++				GameServer()->CreateSound(m_Pos, SOUND_WEAPON_NOAMMO, CClientMask().set(m_pPlayer->GetCid()));
++				if(SecLeft <= 3)
++					GameServer()->CreateDamageInd(m_Pos + vec2(0.0f, -40.0f), 0.0f, SecLeft, TeamMask());
++			}
++		}
++		if(LimitSec > 0 && ElapsedTicks >= LimitSec * Server()->TickSpeed())
++		{
++			int Killer = m_pPlayer->GetCid();
++			int Wpn = WEAPON_WORLD;
++			if(IsFng)
++			{
++				if(m_LastFngFreezer >= 0 && m_LastFngFreezer != Killer && GameServer()->m_apPlayers[m_LastFngFreezer])
++				{
++					Killer = m_LastFngFreezer;
++					Wpn = m_InFreezeTile ? WEAPON_LASER : WEAPON_HAMMER;
++				}
++				else if(m_LastAttacker >= 0 && m_LastAttacker != Killer && (Server()->Tick() - m_LastAttackTick) < 15 * Server()->TickSpeed() && GameServer()->m_apPlayers[m_LastAttacker])
++				{
++					Killer = m_LastAttacker;
++					Wpn = WEAPON_LASER;
++				}
++			}
++			else if(Mode == 1 && m_LastAttacker >= 0 && m_LastAttacker != Killer && (Server()->Tick() - m_LastAttackTick) < 15 * Server()->TickSpeed() && GameServer()->m_apPlayers[m_LastAttacker])
++			{
++				Killer = m_LastAttacker;
++				Wpn = WEAPON_HAMMER;
++			}
++			Die(Killer, Wpn);
+ 			return;
+ 		}
+ 	}
++	else
++	{
++		m_LastFngFreezeTick = 0;
++		m_LastFngFreezer = -1;
++		m_InFreezeTile = false;
++	}
+ 
+ 	if(GameLayerClipped(m_Pos))
+ 	{
+@@ -1726,6 +1885,18 @@ void CCharacter::HandleTiles(int Index)
  	int MapIndex = Index;
  	m_TileIndex = Collision()->GetTileIndex(MapIndex);
  	m_TileFIndex = Collision()->GetFrontTileIndex(MapIndex);
@@ -283,7 +423,7 @@ index 552fe95b3..b973aed69 100644
  	m_MoveRestrictions = Collision()->GetMoveRestrictions(IsSwitchActiveCb, this, m_Pos, 18.0f, MapIndex, &m_Core.m_DDNetPP.m_RestrictionData);
  
  	// ddnet++ start
-@@ -2354,6 +2431,14 @@ void CCharacter::DDRaceTick()
+@@ -2354,6 +2525,14 @@ void CCharacter::DDRaceTick()
  			Unfreeze();
  	}
  
@@ -298,8 +438,20 @@ index 552fe95b3..b973aed69 100644
  	HandleTuneLayer(); // need this before coretick
  
  	// check if the tee is in any type of freeze
+@@ -2516,6 +2695,11 @@ bool CCharacter::Unfreeze()
+ 	KillFreeze(true);
+ 	if(m_FreezeTime > 0)
+ 	{
++		if(GameServer()->m_pController->m_PluginLaserFreezeSec > 0)
++		{
++			GameServer()->CreateSound(m_Pos, SOUND_PICKUP_ARMOR, TeamMask());
++			GameServer()->CreatePlayerSpawn(m_Pos, TeamMask());
++		}
+ 		//BlockWave
+ 		m_BlockWaveFreezeTicks = 0;
+ 		m_pPlayer->m_IsBlockWaveDead = false;
 diff --git a/src/game/server/entities/character.h b/src/game/server/entities/character.h
-index 3d8aea0c4..8396d1b6c 100644
+index 3d8aea0c4..cf1ef1d5f 100644
 --- a/src/game/server/entities/character.h
 +++ b/src/game/server/entities/character.h
 @@ -166,6 +166,8 @@ private:
@@ -311,10 +463,15 @@ index 3d8aea0c4..8396d1b6c 100644
  	int m_QueuedWeapon;
  
  	int m_ReloadTimer;
-@@ -257,6 +259,15 @@ public:
+@@ -257,6 +259,20 @@ public:
  	bool m_NinjaJetpack;
  	int m_TeamBeforeSuper;
  	int m_FreezeTime;
++	int m_LastFngFreezer = -1;
++	int m_LastFngFreezeTick = 0;
++	int m_LastAttacker = -1;
++	int m_LastAttackTick = 0;
++	bool m_InFreezeTile = false;
 +	bool m_PluginNoclip = false;
 +	float m_PluginGravity = -999.0f;
 +	float m_PluginMaxSpeed = -1.0f;
@@ -327,7 +484,7 @@ index 3d8aea0c4..8396d1b6c 100644
  	bool m_FrozenLastTick;
  	int m_TuneZone;
  	int m_TuneZoneOld;
-@@ -273,6 +284,9 @@ public:
+@@ -273,6 +289,9 @@ public:
  
  	int m_TileIndex;
  	int m_TileFIndex;
@@ -337,7 +494,7 @@ index 3d8aea0c4..8396d1b6c 100644
  
  	int64_t m_LastStartWarning;
  	int64_t m_LastRescue;
-@@ -293,8 +307,10 @@ public:
+@@ -293,8 +312,10 @@ public:
  	int GetActiveWeapon() const { return m_Core.m_ActiveWeapon; }
  	void SetActiveWeapon(int ActiveWeap) { m_Core.m_ActiveWeapon = ActiveWeap; }
  	void SetLastAction(int LastAction) { m_LastAction = LastAction; }
@@ -348,7 +505,7 @@ index 3d8aea0c4..8396d1b6c 100644
  	CCharacterCore GetCore() { return m_Core; }
  	void SetCore(const CCharacterCore &Core) { m_Core = Core; }
  	const CCharacterCore *Core() const { return &m_Core; }
-@@ -319,6 +335,9 @@ public:
+@@ -319,6 +340,9 @@ public:
  	bool GrenadeHitDisabled() const { return m_Core.m_GrenadeHitDisabled; }
  
  	void SetHammerHitDisabled(bool HammerHitDisabled) { m_Core.m_HammerHitDisabled = HammerHitDisabled; }
@@ -359,10 +516,21 @@ index 3d8aea0c4..8396d1b6c 100644
  	void SetGrenadeHitDisabled(bool GrenadeHitDisabled) { m_Core.m_GrenadeHitDisabled = GrenadeHitDisabled; }
  	void SetLaserHitDisabled(bool LaserHitDisabled) { m_Core.m_LaserHitDisabled = LaserHitDisabled; }
 diff --git a/src/game/server/entities/character_tiles.cpp b/src/game/server/entities/character_tiles.cpp
-index 0ab8a059b..44bfae735 100644
+index 0ab8a059b..3e2525676 100644
 --- a/src/game/server/entities/character_tiles.cpp
 +++ b/src/game/server/entities/character_tiles.cpp
-@@ -199,6 +199,10 @@ void CCharacter::OnTileShop()
+@@ -135,6 +135,10 @@ bool CCharacter::HandleTilesDDPP(int Index)
+ 
+ 	// freeze (override)
+ 	if(((m_TileIndex == TILE_FREEZE) || (m_TileFIndex == TILE_FREEZE)) && !m_Core.m_Super && !m_Core.m_DeepFrozen)
++	{
++		m_InFreezeTile = true;
++	}
++	if(((m_TileIndex == TILE_FREEZE) || (m_TileFIndex == TILE_FREEZE)) && !m_Core.m_Super && !m_Core.m_DeepFrozen)
+ 	{
+ 		//Chiller Special
+ 		if(m_Core.m_Pos.y > 223 * 32 && m_Core.m_Pos.y < 225 * 32 && m_Core.m_Pos.x < 438 * 32 && m_Core.m_Pos.x > 427 * 32 && m_FakeSuper)
+@@ -199,6 +203,10 @@ void CCharacter::OnTileShop()
  
  void CCharacter::OnTileRoom()
  {
@@ -373,7 +541,7 @@ index 0ab8a059b..44bfae735 100644
  	Core()->m_DDNetPP.m_RestrictionData.m_RoomEnterBlocked = false;
  
  	if(time_get() > m_NextCantEnterRoomMessage)
-@@ -210,6 +214,8 @@ void CCharacter::OnTileRoom()
+@@ -210,6 +218,8 @@ void CCharacter::OnTileRoom()
  
  void CCharacter::OnTileVipPlusOnly()
  {
@@ -382,6 +550,57 @@ index 0ab8a059b..44bfae735 100644
  	Core()->m_DDNetPP.m_RestrictionData.m_VipPluOnlyEnterBlocked = false;
  
  	if(time_get() > m_NextCantEnterVipRoomMessage)
+diff --git a/src/game/server/entities/laser.cpp b/src/game/server/entities/laser.cpp
+index 40614bf8d..b406cdafa 100644
+--- a/src/game/server/entities/laser.cpp
++++ b/src/game/server/entities/laser.cpp
+@@ -61,6 +61,19 @@ bool CLaser::HitCharacter(vec2 From, vec2 To)
+ 	m_From = From;
+ 	m_Pos = At;
+ 	m_Energy = -1;
++	if(m_Type == WEAPON_LASER && GameServer()->m_pController->m_PluginLaserFreezeSec > 0)
++	{
++		if(pOwnerChar && pOwnerChar->GetPlayer() && pHit->GetPlayer() && pOwnerChar->GetPlayer()->GetTeam() != pHit->GetPlayer()->GetTeam() && pHit->m_FreezeTime <= 0)
++		{
++			pHit->Freeze(GameServer()->m_pController->m_PluginLaserFreezeSec);
++			pHit->m_LastFngFreezer = m_Owner;
++			pHit->m_LastFngFreezeTick = Server()->Tick();
++			GameServer()->CreateSound(pHit->m_Pos, SOUND_PLAYER_PAIN_SHORT);
++			if(To != From)
++				pHit->AddVelocity(normalize(To - From) * 6.0f);
++		}
++		return true;
++	}
+ 	if(HitCharacterDDPP(From, To, pHit))
+ 		return false;
+ 	if(m_Type == WEAPON_SHOTGUN)
+@@ -97,7 +110,25 @@ bool CLaser::HitCharacter(vec2 From, vec2 To)
+ 	}
+ 	else if(m_Type == WEAPON_LASER)
+ 	{
+-		pHit->Unfreeze();
++		if(GameServer()->m_pController->m_PluginFng)
++		{
++			if(pOwnerChar && pOwnerChar->GetPlayer() && pHit->GetPlayer() && pOwnerChar->GetPlayer()->GetTeam() != pHit->GetPlayer()->GetTeam())
++			{
++				if(pHit->m_FreezeTime <= 0)
++				{
++					pHit->Freeze(GameServer()->m_pController->m_PluginLaserFreezeSec);
++					GameServer()->CreateSound(pHit->m_Pos, SOUND_PLAYER_PAIN_SHORT);
++				}
++				pHit->m_LastFngFreezer = m_Owner;
++				pHit->m_LastFngFreezeTick = Server()->Tick();
++				if(To != From)
++					pHit->AddVelocity(normalize(To - From) * 6.0f);
++			}
++		}
++		else
++		{
++			pHit->Unfreeze();
++		}
+ 	}
+ 	pHit->TakeDamage(vec2(0, 0), 0, m_Owner, m_Type);
+ 	return true;
 diff --git a/src/game/server/entities/laser_ddpp.cpp b/src/game/server/entities/laser_ddpp.cpp
 index 00171b19a..143a83254 100644
 --- a/src/game/server/entities/laser_ddpp.cpp
@@ -396,7 +615,7 @@ index 00171b19a..143a83254 100644
  	if(m_Type == WEAPON_SHOTGUN)
  	{
 diff --git a/src/game/server/gamecontext.cpp b/src/game/server/gamecontext.cpp
-index eacb3d09e..f4aae589e 100644
+index eacb3d09e..7e5647b22 100644
 --- a/src/game/server/gamecontext.cpp
 +++ b/src/game/server/gamecontext.cpp
 @@ -1,3 +1,4 @@
@@ -663,13 +882,16 @@ index eacb3d09e..f4aae589e 100644
  				Console()->ExecuteLine(pMsg->m_pMessage + 1, ClientId, false);
  			}
  			// m_apPlayers[ClientId] can be nullptr, if the player used a
-@@ -3571,6 +3783,1002 @@ void CGameContext::ConBroadcast(IConsole::IResult *pResult, void *pUserData)
+@@ -3571,170 +3783,1241 @@ void CGameContext::ConBroadcast(IConsole::IResult *pResult, void *pUserData)
  	pSelf->SendBroadcast(aBuf, -1);
  }
  
+-void CGameContext::ConSay(IConsole::IResult *pResult, void *pUserData)
 +void CGameContext::SaveAutoLoginSessions()
-+{
-+	FILE *pFile = fopen("/root/server_run/autologin_sessions.txt", "w");
+ {
+-	CGameContext *pSelf = (CGameContext *)pUserData;
+-	pSelf->SendChat(-1, TEAM_ALL, pResult->GetString(0));
++	FILE *pFile = fopen("autologin_sessions.txt", "w");
 +	if(!pFile)
 +		return;
 +	int64_t Now = time_timestamp();
@@ -679,18 +901,25 @@ index eacb3d09e..f4aae589e 100644
 +			fprintf(pFile, "%s|%s|%s|%lld\n", S.m_Username.c_str(), S.m_Ip.c_str(), S.m_TimeoutCode.c_str(), (long long)S.m_ExpireTime);
 +	}
 +	fclose(pFile);
-+}
-+
+ }
+ 
+-void CGameContext::ConSetTeam(IConsole::IResult *pResult, void *pUserData)
 +void CGameContext::LoadAutoLoginSessions()
-+{
+ {
+-	CGameContext *pSelf = (CGameContext *)pUserData;
+-	if(!pSelf->m_pController)
 +	m_vAutoLoginSessions.clear();
-+	FILE *pFile = fopen("/root/server_run/autologin_sessions.txt", "r");
++	FILE *pFile = fopen("autologin_sessions.txt", "r");
 +	if(!pFile)
-+		return;
+ 		return;
+-	int Team = pResult->GetInteger(1);
+-	if(!pSelf->m_pController->IsValidTeam(Team))
 +	char aLine[512];
 +	int64_t Now = time_timestamp();
 +	while(fgets(aLine, sizeof(aLine), pFile))
-+	{
+ 	{
+-		log_info("server", "Invalid Team: %d", Team);
+-		return;
 +		char *p1 = strchr(aLine, '|');
 +		if(!p1) continue;
 +		*p1 = 0;
@@ -703,22 +932,36 @@ index eacb3d09e..f4aae589e 100644
 +		int64_t Exp = atoll(p3 + 1);
 +		if(Exp > Now)
 +			m_vAutoLoginSessions.push_back({aLine, p1 + 1, p2 + 1, Exp});
-+	}
+ 	}
 +	fclose(pFile);
 +	log_info("autologin", "Loaded %d sessions from disk", (int)m_vAutoLoginSessions.size());
 +}
-+
+ 
+-	int ClientId = pResult->GetVictim(0);
+-	int Delay = pResult->NumArguments() > 2 ? pResult->GetInteger(2) : 0;
+-	if(!pSelf->m_apPlayers[ClientId])
+-		return;
+-
+-	log_info("server", "moved client %d to the %s", ClientId, pSelf->m_pController->GetTeamName(Team));
+-
+-	pSelf->m_apPlayers[ClientId]->Pause(CPlayer::PAUSE_NONE, false); // reset /spec and /pause to allow rejoin
+-	pSelf->m_apPlayers[ClientId]->m_TeamChangeTick = pSelf->Server()->Tick() + pSelf->Server()->TickSpeed() * Delay * 60;
+-	pSelf->m_pController->DoTeamChange(pSelf->m_apPlayers[ClientId], Team, true);
+-	if(Team == TEAM_SPECTATORS)
+-		pSelf->m_apPlayers[ClientId]->Pause(CPlayer::PAUSE_NONE, true);
 +void CGameContext::ConBroadcastTo(IConsole::IResult *pResult, void *pUserData)
 +{
 +	CGameContext *pSelf = (CGameContext *)pUserData;
 +	int ClientId = pResult->GetInteger(0);
 +	if(ClientId >= 0 && ClientId < MAX_CLIENTS)
 +		pSelf->SendBroadcast(pResult->GetString(1), ClientId);
-+}
-+
+ }
+ 
+-void CGameContext::ConHotReload(IConsole::IResult *pResult, void *pUserData)
 +void CGameContext::ConSetDdrTeam(IConsole::IResult *pResult, void *pUserData)
-+{
-+	CGameContext *pSelf = (CGameContext *)pUserData;
+ {
+ 	CGameContext *pSelf = (CGameContext *)pUserData;
+-	for(int i = 0; i < MAX_CLIENTS; i++)
 +	int Cid = pResult->GetInteger(0);
 +	int Team = pResult->GetInteger(1);
 +	if(CCharacter *pChr = pSelf->GetPlayerChar(Cid))
@@ -730,14 +973,41 @@ index eacb3d09e..f4aae589e 100644
 +	int Cid = pResult->GetInteger(0);
 +	int Target = pResult->GetInteger(1);
 +	if(Cid >= 0 && Cid < MAX_CLIENTS && pSelf->m_apPlayers[Cid])
-+	{
+ 	{
+-		if(!pSelf->GetPlayerChar(i))
+-			continue;
+-
+-		CCharacter *pChar = pSelf->GetPlayerChar(i);
+-
+-		// Save the tee individually
+-		delete pSelf->m_apSavedTees[i];
+-		pSelf->m_apSavedTees[i] = new CSaveHotReloadTee();
+-		pSelf->m_apSavedTees[i]->Save(pChar, false);
+-
+-		// Save the team state
+-		pSelf->m_aTeamMapping[i] = pSelf->GetDDRaceTeam(i);
+-		if(pSelf->m_aTeamMapping[i] == TEAM_SUPER)
+-			pSelf->m_aTeamMapping[i] = pChar->m_TeamBeforeSuper;
+-
+-		if(pSelf->m_apSavedTeams[pSelf->m_aTeamMapping[i]])
+-			continue;
+-
+-		pSelf->m_apSavedTeams[pSelf->m_aTeamMapping[i]] = new CSaveTeam();
+-		pSelf->m_apSavedTeams[pSelf->m_aTeamMapping[i]]->Save(pSelf, pSelf->m_aTeamMapping[i], true, true);
 +		if(Target == -2) pSelf->m_apPlayers[Cid]->SetTeam(TEAM_RED, false);
 +		else { pSelf->m_apPlayers[Cid]->SetTeam(TEAM_SPECTATORS, false); pSelf->m_apPlayers[Cid]->SetSpectatorId(Target); }
-+	}
-+}
+ 	}
+-	pSelf->Server()->ReloadMap();
+ }
+-
+-void CGameContext::ConAddVote(IConsole::IResult *pResult, void *pUserData)
 +void CGameContext::ConSpawnPickup(IConsole::IResult *pResult, void *pUserData)
-+{
-+	CGameContext *pSelf = (CGameContext *)pUserData;
+ {
+ 	CGameContext *pSelf = (CGameContext *)pUserData;
+-	const char *pDescription = pResult->GetString(0);
+-	const char *pCommand = pResult->GetString(1);
+-
+-	pSelf->AddVote(pDescription, pCommand);
 +	int Id = pResult->GetInteger(0);
 +	if(Id >= 0 && Id < 64)
 +	{
@@ -745,9 +1015,12 @@ index eacb3d09e..f4aae589e 100644
 +		pSelf->m_aVirtPickups[Id].Type = pResult->GetInteger(1);
 +		pSelf->m_aVirtPickups[Id].Pos = vec2(pResult->GetFloat(2), pResult->GetFloat(3));
 +	}
-+}
+ }
+-
+-void CGameContext::AddVote(const char *pDescription, const char *pCommand)
 +void CGameContext::ConRemovePickup(IConsole::IResult *pResult, void *pUserData)
-+{
+ {
+-	if(m_NumVoteOptions == MAX_VOTE_OPTIONS)
 +	CGameContext *pSelf = (CGameContext *)pUserData;
 +	int Id = pResult->GetInteger(0);
 +	if(Id >= 0 && Id < 64) pSelf->m_aVirtPickups[Id].Active = false;
@@ -759,7 +1032,9 @@ index eacb3d09e..f4aae589e 100644
 +	const char *pAttr = pResult->GetString(1);
 +	bool Val = pResult->GetInteger(2) != 0;
 +	if(CCharacter *pChr = pSelf->GetPlayerChar(ClientId))
-+	{
+ 	{
+-		log_error("server", "maximum number of vote options reached");
+-		return;
 +		if(!str_comp_nocase(pAttr, "endless_jump")) pChr->SetEndlessJump(Val);
 +		else if(!str_comp_nocase(pAttr, "jetpack")) pChr->SetJetpack(Val);
 +		else if(!str_comp_nocase(pAttr, "super")) pChr->SetSuper(Val);
@@ -769,21 +1044,35 @@ index eacb3d09e..f4aae589e 100644
 +		else if(!str_comp_nocase(pAttr, "hammer_hit")) pChr->SetHammerHitDisabled(!Val);
 +		else if(!str_comp_nocase(pAttr, "no_knockback")) pChr->m_NoKnockback = Val;
 +		else if(!str_comp_nocase(pAttr, "god")) pChr->m_GodMode = Val;
-+	}
+ 	}
 +}
-+
+ 
+-	// check for valid option
+-	if(!Console()->LineIsValid(pCommand) || str_length(pCommand) >= VOTE_CMD_LENGTH)
+-	{
+-		log_error("server", "skipped invalid command '%s'", pCommand);
+-		return;
+-	}
+-	while(*pDescription == ' ')
+-		pDescription++;
+-	if(str_length(pDescription) >= VOTE_DESC_LENGTH || *pDescription == 0)
 +void CGameContext::ConGiveWeapon(IConsole::IResult *pResult, void *pUserData)
 +{
 +	CGameContext *pSelf = (CGameContext *)pUserData;
 +	int ClientId = pResult->GetInteger(0);
 +	int Weapon = pResult->GetInteger(1);
 +	if(CCharacter *pChr = pSelf->GetPlayerChar(ClientId))
-+	{
+ 	{
+-		log_error("server", "skipped invalid option '%s'", pDescription);
+-		return;
 +		if(Weapon == WEAPON_NINJA) pChr->GiveNinja();
 +		else if(Weapon >= 0 && Weapon < NUM_WEAPONS) { pChr->GiveWeapon(Weapon); pChr->SetWeapon(Weapon); }
-+	}
+ 	}
 +}
-+
+ 
+-	// check for duplicate entry
+-	CVoteOptionServer *pOption = m_pVoteOptionFirst;
+-	while(pOption)
 +void CGameContext::ConPlaySound(IConsole::IResult *pResult, void *pUserData)
 +{
 +	CGameContext *pSelf = (CGameContext *)pUserData;
@@ -792,32 +1081,62 @@ index eacb3d09e..f4aae589e 100644
 +	if(SoundId < 0 || SoundId >= NUM_SOUNDS)
 +		return;
 +	if(ClientId == -1)
-+	{
+ 	{
+-		if(str_comp_nocase(pDescription, pOption->m_aDescription) == 0)
 +		for(int i = 0; i < MAX_CLIENTS; i++)
-+		{
+ 		{
+-			log_error("server", "option '%s' already exists", pDescription);
+-			return;
 +			if(pSelf->m_apPlayers[i])
 +			{
 +				vec2 Pos = pSelf->GetPlayerChar(i) ? pSelf->GetPlayerChar(i)->m_Pos : pSelf->m_apPlayers[i]->m_ViewPos;
 +				pSelf->CreateSound(Pos, SoundId, CClientMask().set(i));
 +			}
-+		}
-+	}
+ 		}
+-		pOption = pOption->m_pNext;
+ 	}
+-
+-	// add the option
+-	++m_NumVoteOptions;
+-	int Len = str_length(pCommand);
+-
+-	pOption = (CVoteOptionServer *)m_pVoteOptionHeap->Allocate(sizeof(CVoteOptionServer) + Len, alignof(CVoteOptionServer));
+-	pOption->m_pNext = nullptr;
+-	pOption->m_pPrev = m_pVoteOptionLast;
+-	if(pOption->m_pPrev)
+-		pOption->m_pPrev->m_pNext = pOption;
+-	m_pVoteOptionLast = pOption;
+-	if(!m_pVoteOptionFirst)
+-		m_pVoteOptionFirst = pOption;
+-
+-	str_copy(pOption->m_aDescription, pDescription);
+-	str_copy(pOption->m_aCommand, pCommand, Len + 1);
 +	else if(ClientId >= 0 && ClientId < MAX_CLIENTS && pSelf->m_apPlayers[ClientId])
 +	{
 +		vec2 Pos = pSelf->GetPlayerChar(ClientId) ? pSelf->GetPlayerChar(ClientId)->m_Pos : pSelf->m_apPlayers[ClientId]->m_ViewPos;
 +		pSelf->CreateSound(Pos, SoundId, CClientMask().set(ClientId));
 +	}
-+}
-+
+ }
+ 
+-void CGameContext::ConRemoveVote(IConsole::IResult *pResult, void *pUserData)
 +void CGameContext::ConResetHook(IConsole::IResult *pResult, void *pUserData)
-+{
-+	CGameContext *pSelf = (CGameContext *)pUserData;
+ {
+ 	CGameContext *pSelf = (CGameContext *)pUserData;
+-	const char *pDescription = pResult->GetString(0);
+-
+-	// check for valid option
+-	CVoteOptionServer *pOption = pSelf->m_pVoteOptionFirst;
+-	while(pOption)
 +	int ClientId = pResult->GetInteger(0);
 +	if(CCharacter *pChr = pSelf->GetPlayerChar(ClientId))
-+	{
+ 	{
+-		if(str_comp_nocase(pDescription, pOption->m_aDescription) == 0)
+-			break;
+-		pOption = pOption->m_pNext;
 +		pChr->Core()->m_HookState = HOOK_RETRACTED;
 +		pChr->Core()->SetHookedPlayer(-1);
-+	}
+ 	}
+-	if(!pOption)
 +}
 +
 +void CGameContext::ConGetState(IConsole::IResult *pResult, void *pUserData)
@@ -825,21 +1144,29 @@ index eacb3d09e..f4aae589e 100644
 +	CGameContext *pSelf = (CGameContext *)pUserData;
 +	int ClientId = pResult->GetInteger(0);
 +	if(ClientId >= 0 && ClientId < MAX_CLIENTS && pSelf->m_apPlayers[ClientId])
-+	{
+ 	{
+-		log_error("server", "option '%s' does not exist", pDescription);
+-		return;
 +		if(CCharacter *pChr = pSelf->GetPlayerChar(ClientId))
 +			log_info("state", "%d:%s:%.1f:%.1f:%.1f:%.1f:%d:%d", ClientId, pSelf->Server()->ClientName(ClientId), pChr->m_Pos.x, pChr->m_Pos.y, pChr->Core()->m_Vel.x, pChr->Core()->m_Vel.y, pChr->m_FreezeTime > 0 ? 1 : 0, pChr->GetActiveWeapon());
 +		else
 +			log_info("state", "%d:%s:0:0:0:0:-1:-1", ClientId, pSelf->Server()->ClientName(ClientId));
-+	}
+ 	}
 +}
-+
+ 
+-	// start reloading vote option list
+-	// clear vote options
+-	CNetMsg_Sv_VoteClearOptions VoteClearOptionsMsg;
+-	pSelf->Server()->SendPackMsg(&VoteClearOptionsMsg, MSGFLAG_VITAL, -1);
 +void CGameContext::ConSetVel(IConsole::IResult *pResult, void *pUserData)
 +{
 +	CGameContext *pSelf = (CGameContext *)pUserData;
 +	if(CCharacter *pChr = pSelf->GetPlayerChar(pResult->GetInteger(0)))
 +		pChr->Core()->m_Vel = vec2(pResult->GetFloat(1), pResult->GetFloat(2));
 +}
-+
+ 
+-	// reset sending of vote options
+-	for(auto &pPlayer : pSelf->m_apPlayers)
 +void CGameContext::ConPluginApplyImpulse(IConsole::IResult *pResult, void *pUserData)
 +{
 +	CGameContext *pSelf = (CGameContext *)pUserData;
@@ -852,12 +1179,23 @@ index eacb3d09e..f4aae589e 100644
 +	CGameContext *pSelf = (CGameContext *)pUserData;
 +	int Secs = pResult->GetInteger(1);
 +	if(CCharacter *pChr = pSelf->GetPlayerChar(pResult->GetInteger(0)))
-+	{
+ 	{
+-		if(pPlayer)
+-			pPlayer->m_SendVoteIndex = 0;
 +		if(Secs > 0) pChr->Freeze(Secs);
 +		else pChr->Unfreeze();
-+	}
+ 	}
 +}
-+
+ 
+-	// TODO: improve this
+-	// remove the option
+-	--pSelf->m_NumVoteOptions;
+-
+-	CHeap *pVoteOptionHeap = new CHeap();
+-	CVoteOptionServer *pVoteOptionFirst = nullptr;
+-	CVoteOptionServer *pVoteOptionLast = nullptr;
+-	int NumVoteOptions = pSelf->m_NumVoteOptions;
+-	for(CVoteOptionServer *pSrc = pSelf->m_pVoteOptionFirst; pSrc; pSrc = pSrc->m_pNext)
 +void CGameContext::ConSetStats(IConsole::IResult *pResult, void *pUserData)
 +{
 +	CGameContext *pSelf = (CGameContext *)pUserData;
@@ -880,7 +1218,9 @@ index eacb3d09e..f4aae589e 100644
 +	const char *pHelp = std::get<2>(s_PluginCmds.back()).c_str();
 +	pSelf->Console()->Register(pName, pParams, CFGFLAG_CHAT, ConPluginChatCmd, pSelf, pHelp);
 +	for(int i = 0; i < MAX_CLIENTS; i++)
-+	{
+ 	{
+-		if(pSrc == pOption)
+-			continue;
 +		if(!pSelf->m_apPlayers[i]) continue;
 +		if(pSelf->Server()->IsSixup(i))
 +		{
@@ -1180,6 +1520,81 @@ index eacb3d09e..f4aae589e 100644
 +	}
 +}
 +static std::map<std::pair<int, int>, int> s_PluginOrigTiles;
++
++void CGameContext::ConSetFreezeAutokill(IConsole::IResult *pResult, void *pUserData)
++{
++	((CGameContext *)pUserData)->m_pController->m_PluginFreezeAutokillSec = std::max(0, pResult->GetInteger(0));
++}
++void CGameContext::ConSetLaserFreeze(IConsole::IResult *pResult, void *pUserData)
++{
++	((CGameContext *)pUserData)->m_pController->m_PluginLaserFreezeSec = std::max(0, pResult->GetInteger(0));
++}
++void CGameContext::ConSetHammerTeamUnfreeze(IConsole::IResult *pResult, void *pUserData)
++{
++	((CGameContext *)pUserData)->m_pController->m_PluginHammerTeamUnfreeze = pResult->GetInteger(0) != 0;
++}
++void CGameContext::ConSetFngWeapons(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	bool On = pResult->GetInteger(0) != 0;
++	pSelf->m_pController->m_PluginFngWeapons = On;
++	for(int i = 0; i < MAX_CLIENTS; ++i)
++	{
++		CCharacter *pChr = pSelf->GetPlayerChar(i);
++		if(!pChr) continue;
++		if(On) { pChr->GiveWeapon(WEAPON_GUN, true); pChr->GiveWeapon(WEAPON_LASER, false); pChr->SetActiveWeapon(WEAPON_LASER); }
++		else { pChr->GiveWeapon(WEAPON_LASER, true); pChr->GiveWeapon(WEAPON_GUN, false); pChr->SetActiveWeapon(WEAPON_GUN); }
++	}
++}
++void CGameContext::ConSetGamemode(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Mode = std::clamp(pResult->GetInteger(0), 0, 3);
++	if(pSelf->m_pController)
++		pSelf->m_pController->SetPluginMode(Mode);
++	for(int i = 0; i < MAX_CLIENTS; ++i)
++	{
++		if(pSelf->m_apPlayers[i])
++		{
++			pSelf->m_apPlayers[i]->m_PluginScore = 0;
++			if(Mode < 2 && pSelf->m_apPlayers[i]->GetTeam() == TEAM_BLUE)
++				pSelf->m_apPlayers[i]->SetPluginTeam(TEAM_RED);
++		}
++	}
++}
++void CGameContext::ConSetPlayerScore(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	const char *pTarget = pResult->GetString(0);
++	int Score = pResult->GetInteger(1);
++	int Cid = -1;
++	bool IsNum = pTarget && pTarget[0] != '\0';
++	for(int j = 0; pTarget && pTarget[j]; ++j)
++		if(pTarget[j] < '0' || pTarget[j] > '9') IsNum = false;
++	if(IsNum)
++		Cid = str_toint(pTarget);
++	else
++	{
++		for(int i = 0; i < MAX_CLIENTS; ++i)
++			if(pSelf->m_apPlayers[i] && str_comp(pSelf->Server()->ClientName(i), pTarget) == 0)
++			{ Cid = i; break; }
++	}
++	if(Cid >= 0 && Cid < MAX_CLIENTS && pSelf->m_apPlayers[Cid])
++		pSelf->m_apPlayers[Cid]->m_PluginScore = Score;
++}
++void CGameContext::ConSetPlayerTeam(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Cid = pResult->GetInteger(0);
++	if(Cid >= 0 && Cid < MAX_CLIENTS && pSelf->m_apPlayers[Cid])
++		pSelf->m_apPlayers[Cid]->SetPluginTeam(pResult->GetInteger(1));
++}
++void CGameContext::ConSetTeamScore(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	if(pSelf->m_pController)
++		pSelf->m_pController->SetTeamScores(pResult->GetInteger(0), pResult->GetInteger(1));
++}
 +
 +void CGameContext::ConSetNoclip(IConsole::IResult *pResult, void *pUserData)
 +{
@@ -1663,10 +2078,174 @@ index eacb3d09e..f4aae589e 100644
 +		pSelf->SendChatTarget(ClientId, pResult->GetString(1));
 +}
 +
- void CGameContext::ConSay(IConsole::IResult *pResult, void *pUserData)
- {
- 	CGameContext *pSelf = (CGameContext *)pUserData;
-@@ -4094,6 +5302,80 @@ void CGameContext::OnConsoleInit()
++void CGameContext::ConSay(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	pSelf->SendChat(-1, TEAM_ALL, pResult->GetString(0));
++}
++
++void CGameContext::ConSetTeam(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	if(!pSelf->m_pController)
++		return;
++	int Team = pResult->GetInteger(1);
++	if(!pSelf->m_pController->IsValidTeam(Team))
++	{
++		log_info("server", "Invalid Team: %d", Team);
++		return;
++	}
++
++	int ClientId = pResult->GetVictim(0);
++	int Delay = pResult->NumArguments() > 2 ? pResult->GetInteger(2) : 0;
++	if(!pSelf->m_apPlayers[ClientId])
++		return;
++
++	log_info("server", "moved client %d to the %s", ClientId, pSelf->m_pController->GetTeamName(Team));
++
++	pSelf->m_apPlayers[ClientId]->Pause(CPlayer::PAUSE_NONE, false); // reset /spec and /pause to allow rejoin
++	pSelf->m_apPlayers[ClientId]->m_TeamChangeTick = pSelf->Server()->Tick() + pSelf->Server()->TickSpeed() * Delay * 60;
++	pSelf->m_pController->DoTeamChange(pSelf->m_apPlayers[ClientId], Team, true);
++	if(Team == TEAM_SPECTATORS)
++		pSelf->m_apPlayers[ClientId]->Pause(CPlayer::PAUSE_NONE, true);
++}
++
++void CGameContext::ConHotReload(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	for(int i = 0; i < MAX_CLIENTS; i++)
++	{
++		if(!pSelf->GetPlayerChar(i))
++			continue;
++
++		CCharacter *pChar = pSelf->GetPlayerChar(i);
++
++		// Save the tee individually
++		delete pSelf->m_apSavedTees[i];
++		pSelf->m_apSavedTees[i] = new CSaveHotReloadTee();
++		pSelf->m_apSavedTees[i]->Save(pChar, false);
++
++		// Save the team state
++		pSelf->m_aTeamMapping[i] = pSelf->GetDDRaceTeam(i);
++		if(pSelf->m_aTeamMapping[i] == TEAM_SUPER)
++			pSelf->m_aTeamMapping[i] = pChar->m_TeamBeforeSuper;
++
++		if(pSelf->m_apSavedTeams[pSelf->m_aTeamMapping[i]])
++			continue;
++
++		pSelf->m_apSavedTeams[pSelf->m_aTeamMapping[i]] = new CSaveTeam();
++		pSelf->m_apSavedTeams[pSelf->m_aTeamMapping[i]]->Save(pSelf, pSelf->m_aTeamMapping[i], true, true);
++	}
++	pSelf->Server()->ReloadMap();
++}
++
++void CGameContext::ConAddVote(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	const char *pDescription = pResult->GetString(0);
++	const char *pCommand = pResult->GetString(1);
++
++	pSelf->AddVote(pDescription, pCommand);
++}
++
++void CGameContext::AddVote(const char *pDescription, const char *pCommand)
++{
++	if(m_NumVoteOptions == MAX_VOTE_OPTIONS)
++	{
++		log_error("server", "maximum number of vote options reached");
++		return;
++	}
++
++	// check for valid option
++	if(!Console()->LineIsValid(pCommand) || str_length(pCommand) >= VOTE_CMD_LENGTH)
++	{
++		log_error("server", "skipped invalid command '%s'", pCommand);
++		return;
++	}
++	while(*pDescription == ' ')
++		pDescription++;
++	if(str_length(pDescription) >= VOTE_DESC_LENGTH || *pDescription == 0)
++	{
++		log_error("server", "skipped invalid option '%s'", pDescription);
++		return;
++	}
++
++	// check for duplicate entry
++	CVoteOptionServer *pOption = m_pVoteOptionFirst;
++	while(pOption)
++	{
++		if(str_comp_nocase(pDescription, pOption->m_aDescription) == 0)
++		{
++			log_error("server", "option '%s' already exists", pDescription);
++			return;
++		}
++		pOption = pOption->m_pNext;
++	}
++
++	// add the option
++	++m_NumVoteOptions;
++	int Len = str_length(pCommand);
++
++	pOption = (CVoteOptionServer *)m_pVoteOptionHeap->Allocate(sizeof(CVoteOptionServer) + Len, alignof(CVoteOptionServer));
++	pOption->m_pNext = nullptr;
++	pOption->m_pPrev = m_pVoteOptionLast;
++	if(pOption->m_pPrev)
++		pOption->m_pPrev->m_pNext = pOption;
++	m_pVoteOptionLast = pOption;
++	if(!m_pVoteOptionFirst)
++		m_pVoteOptionFirst = pOption;
++
++	str_copy(pOption->m_aDescription, pDescription);
++	str_copy(pOption->m_aCommand, pCommand, Len + 1);
++}
++
++void CGameContext::ConRemoveVote(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	const char *pDescription = pResult->GetString(0);
++
++	// check for valid option
++	CVoteOptionServer *pOption = pSelf->m_pVoteOptionFirst;
++	while(pOption)
++	{
++		if(str_comp_nocase(pDescription, pOption->m_aDescription) == 0)
++			break;
++		pOption = pOption->m_pNext;
++	}
++	if(!pOption)
++	{
++		log_error("server", "option '%s' does not exist", pDescription);
++		return;
++	}
++
++	// start reloading vote option list
++	// clear vote options
++	CNetMsg_Sv_VoteClearOptions VoteClearOptionsMsg;
++	pSelf->Server()->SendPackMsg(&VoteClearOptionsMsg, MSGFLAG_VITAL, -1);
++
++	// reset sending of vote options
++	for(auto &pPlayer : pSelf->m_apPlayers)
++	{
++		if(pPlayer)
++			pPlayer->m_SendVoteIndex = 0;
++	}
++
++	// TODO: improve this
++	// remove the option
++	--pSelf->m_NumVoteOptions;
++
++	CHeap *pVoteOptionHeap = new CHeap();
++	CVoteOptionServer *pVoteOptionFirst = nullptr;
++	CVoteOptionServer *pVoteOptionLast = nullptr;
++	int NumVoteOptions = pSelf->m_NumVoteOptions;
++	for(CVoteOptionServer *pSrc = pSelf->m_pVoteOptionFirst; pSrc; pSrc = pSrc->m_pNext)
++	{
++		if(pSrc == pOption)
++			continue;
+ 
+ 		// copy option
+ 		int Len = str_length(pSrc->m_aCommand);
+@@ -4094,6 +5377,88 @@ void CGameContext::OnConsoleInit()
  	Console()->Register("mod_alert", "v[id] r[message]", CFGFLAG_SERVER, ConModAlert, this, "Send a moderator alert message to player");
  	Console()->Register("broadcast", "r[message]", CFGFLAG_SERVER, ConBroadcast, this, "Broadcast message");
  	Console()->Register("say", "r[message]", CFGFLAG_SERVER, ConSay, this, "Say in chat");
@@ -1711,6 +2290,14 @@ index eacb3d09e..f4aae589e 100644
 +	Console()->Register("plugin_check_tile", "iff", CFGFLAG_SERVER, ConPluginCheckTile, this, "Query map tile index at X Y");
 +	Console()->Register("spawn_visual_pickup", "iiiff", CFGFLAG_SERVER, ConSpawnVisualPickup, this, "Spawn visual pickup ID Type Subtype X Y");
 +	Console()->Register("spawn_visual_pickup_follow", "iiiifff", CFGFLAG_SERVER, ConSpawnVisualPickupFollow, this, "Spawn attached visual pickup ID Type Subtype Cid OffX OffY BobAmp");
++	Console()->Register("set_gamemode", "i", CFGFLAG_SERVER, ConSetGamemode, this, "Set scoreboard mode (0=race, 1=points, 2=team_points)");
++	Console()->Register("set_freeze_autokill", "i", CFGFLAG_SERVER, ConSetFreezeAutokill, this, "Auto-kill in freeze tile after N seconds (0=off)");
++	Console()->Register("set_laser_freeze", "i", CFGFLAG_SERVER, ConSetLaserFreeze, this, "Laser freezes enemies for N seconds (0=off)");
++	Console()->Register("set_hammer_team_unfreeze", "i", CFGFLAG_SERVER, ConSetHammerTeamUnfreeze, this, "Hammer unfreezes teammates only (0|1)");
++	Console()->Register("set_fng_weapons", "i", CFGFLAG_SERVER, ConSetFngWeapons, this, "Spawn with hammer and laser only (0|1)");
++	Console()->Register("set_player_score", "si", CFGFLAG_SERVER, ConSetPlayerScore, this, "Set player scoreboard points CidOrNick Score");
++	Console()->Register("set_player_team", "ii", CFGFLAG_SERVER, ConSetPlayerTeam, this, "Set player team Cid Team (0=red, 1=blue, -1=spec)");
++	Console()->Register("set_team_score", "ii", CFGFLAG_SERVER, ConSetTeamScore, this, "Set team scores Red Blue");
 +	Console()->Register("remove_visual_pickup", "i", CFGFLAG_SERVER, ConRemoveVisualPickup, this, "Remove visual pickup ID");
 +	Console()->Register("spawn_visual_tee", "iffsiii", CFGFLAG_SERVER, ConSpawnVisualTee, this, "Spawn visual tee ID X Y Skin ColorBody ColorFeet Freeze");
 +	Console()->Register("remove_visual_tee", "i", CFGFLAG_SERVER, ConRemoveVisualTee, this, "Remove visual tee ID");
@@ -1747,7 +2334,7 @@ index eacb3d09e..f4aae589e 100644
  	Console()->Register("set_team", "v[id] i[team-id] ?i[delay in minutes]", CFGFLAG_SERVER, ConSetTeam, this, "Set team for a player (spectators = -1, game = 0)");
  	Console()->Register("hot_reload", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConHotReload, this, "Reload the map while preserving the state of tees and teams");
  	Console()->Register("reload_censorlist", "", CFGFLAG_SERVER, ConReloadCensorlist, this, "Reload the censorlist");
-@@ -4127,7 +5409,7 @@ void CGameContext::RegisterDDRaceCommands()
+@@ -4127,7 +5492,7 @@ void CGameContext::RegisterDDRaceCommands()
  	Console()->Register("totelecp", "i[number]", CFGFLAG_SERVER | CMDFLAG_TEST, ConToCheckTeleporter, this, "Teleports you to checkpoint teleporter i");
  	Console()->Register("tele", "?v[id] ?v[id]", CFGFLAG_SERVER | CMDFLAG_TEST, ConTeleport, this, "Teleports player i (or you) to player i (or you to where you look at)");
  	Console()->Register("addweapon", "i[weapon-id]", CFGFLAG_SERVER | CMDFLAG_TEST, ConAddWeapon, this, "Gives weapon with id i to you (all = -1, hammer = 0, gun = 1, shotgun = 2, grenade = 3, laser = 4, ninja = 5)");
@@ -1756,7 +2343,7 @@ index eacb3d09e..f4aae589e 100644
  	Console()->Register("shotgun", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConShotgun, this, "Gives a shotgun to you");
  	Console()->Register("grenade", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConGrenade, this, "Gives a grenade launcher to you");
  	Console()->Register("laser", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConLaser, this, "Gives a laser to you");
-@@ -4888,6 +6170,92 @@ void CGameContext::OnSnap(int ClientId, bool GlobalSnap, bool RecordingDemo)
+@@ -4888,6 +6253,92 @@ void CGameContext::OnSnap(int ClientId, bool GlobalSnap, bool RecordingDemo)
  
  	m_World.Snap(ClientId);
  
@@ -1850,10 +2437,10 @@ index eacb3d09e..f4aae589e 100644
  	if(GlobalSnap)
  	{
 diff --git a/src/game/server/gamecontext.h b/src/game/server/gamecontext.h
-index 087b2e3ad..7850d7bc0 100644
+index 087b2e3ad..c3aaefdf8 100644
 --- a/src/game/server/gamecontext.h
 +++ b/src/game/server/gamecontext.h
-@@ -186,6 +186,114 @@ class CGameContext : public IGameServer
+@@ -186,6 +186,122 @@ class CGameContext : public IGameServer
  	static void ConServerAlert(IConsole::IResult *pResult, void *pUserData);
  	static void ConModAlert(IConsole::IResult *pResult, void *pUserData);
  	static void ConBroadcast(IConsole::IResult *pResult, void *pUserData);
@@ -1876,6 +2463,14 @@ index 087b2e3ad..7850d7bc0 100644
 +	static void ConSpawnLaserEx(IConsole::IResult *pResult, void *pUserData);
 +	static void ConPluginRemoveWeapon(IConsole::IResult *pResult, void *pUserData);
 +	static void ConSetVisible(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetGamemode(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetFreezeAutokill(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetLaserFreeze(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetHammerTeamUnfreeze(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetFngWeapons(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetPlayerScore(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetPlayerTeam(IConsole::IResult *pResult, void *pUserData);
++	static void ConSetTeamScore(IConsole::IResult *pResult, void *pUserData);
 +	static void ConSetAlpha(IConsole::IResult *pResult, void *pUserData);
 +	static void ConSetActiveWeapon(IConsole::IResult *pResult, void *pUserData);
 +	static void ConClearWeapons(IConsole::IResult *pResult, void *pUserData);
@@ -2058,11 +2653,142 @@ index a6208ac63..e1c7505f2 100644
  
  	bool DDPPCredits();
  	bool DDPPInfo();
+diff --git a/src/game/server/gamecontroller.cpp b/src/game/server/gamecontroller.cpp
+index 63813bf32..3bdeb7d58 100644
+--- a/src/game/server/gamecontroller.cpp
++++ b/src/game/server/gamecontroller.cpp
+@@ -479,6 +479,8 @@ void IGameController::ResetGame()
+ 
+ bool IGameController::IsValidTeam(int Team)
+ {
++	if(m_PluginMode == 2)
++		return Team == TEAM_SPECTATORS || Team == TEAM_RED || Team == TEAM_BLUE;
+ 	return Team == TEAM_SPECTATORS || Team == TEAM_GAME;
+ }
+ 
+@@ -488,10 +490,12 @@ const char *IGameController::GetTeamName(int Team)
+ 	{
+ 	case TEAM_SPECTATORS:
+ 		return "spectators";
+-	case TEAM_GAME:
+-		return "game";
++	case TEAM_RED:
++		return m_PluginMode == 2 ? "red team" : "game";
++	case TEAM_BLUE:
++		return "blue team";
+ 	default:
+-		dbg_assert_failed("Invalid Team: %d", Team);
++		return "game";
+ 	}
+ }
+ 
+@@ -656,7 +660,8 @@ void IGameController::Snap(int SnappingClient)
+ {
+ 	CNetObj_GameInfo GameInfo = {};
+ 
+-	GameInfo.m_GameFlags = GameFlags_ClampToSix(m_GameFlags);
++	int EffectiveGameFlags = m_PluginMode == 0 ? m_GameFlags : (m_PluginMode == 2 ? GAMEFLAG_TEAMS : 0);
++	GameInfo.m_GameFlags = GameFlags_ClampToSix(EffectiveGameFlags);
+ 	GameInfo.m_GameStateFlags = 0;
+ 	if(m_GameOverTick != -1)
+ 		GameInfo.m_GameStateFlags |= GAMESTATEFLAG_GAMEOVER;
+@@ -732,6 +737,10 @@ void IGameController::Snap(int SnappingClient)
+ 	GameInfoEx.m_NumDDRaceTeams = NUM_DDRACE_TEAMS;
+ 	GameInfoEx.m_Flags = SnapGameInfoExFlags(SnappingClient, GameInfoEx.m_Flags); // ddnet-insta
+ 	GameInfoEx.m_Flags2 = SnapGameInfoExFlags2(SnappingClient, GameInfoEx.m_Flags2); // ddnet-insta
++	if(m_PluginMode > 0)
++	{
++		GameInfoEx.m_Flags &= ~(GAMEINFOFLAG_TIMESCORE | GAMEINFOFLAG_RACE | GAMEINFOFLAG_GAMETYPE_RACE | GAMEINFOFLAG_RACE_RECORD_MESSAGE);
++	}
+ 	Server()->SnapNewItem(0, GameInfoEx);
+ 
+ 	if(Server()->IsSixup(SnappingClient))
+@@ -760,7 +769,7 @@ void IGameController::Snap(int SnappingClient)
+ 
+ 	GameServer()->SnapSwitchers(SnappingClient);
+ 
+-	if(!Server()->IsSixup(SnappingClient))
++	if(!Server()->IsSixup(SnappingClient) && m_PluginMode == 0)
+ 	{
+ 		CFinishTime MapTime = SnapMapBestTime(SnappingClient);
+ 		if(MapTime.m_Seconds != FinishTime::UNSET)
+@@ -791,6 +800,25 @@ bool IGameController::CanJoinTeam(int Team, int NotThisId, char *pErrorReason, i
+ 			str_copy(pErrorReason, "Use /pause first then you can kill", ErrorReasonSize);
+ 		return false;
+ 	}
++	if(m_PluginMode == 2 && (Team == TEAM_RED || Team == TEAM_BLUE))
++	{
++		int Reds = 0, Blues = 0;
++		for(int i = 0; i < MAX_CLIENTS; i++)
++		{
++			if(GameServer()->m_apPlayers[i] && i != NotThisId)
++			{
++				if(GameServer()->m_apPlayers[i]->GetTeam() == TEAM_RED) Reds++;
++				else if(GameServer()->m_apPlayers[i]->GetTeam() == TEAM_BLUE) Blues++;
++			}
++		}
++		if((Team == TEAM_RED && Reds > Blues) || (Team == TEAM_BLUE && Blues > Reds))
++		{
++			if(pErrorReason)
++				str_copy(pErrorReason, "Team is full! Join the smaller team.", ErrorReasonSize);
++			return false;
++		}
++		return true;
++	}
+ 	if(Team == TEAM_SPECTATORS || (pPlayer && pPlayer->GetTeam() != TEAM_SPECTATORS))
+ 		return true;
+ 
+@@ -890,6 +918,7 @@ void IGameController::DoTeamChange(CPlayer *pPlayer, int Team, bool DoChatMsg)
+ 		GameServer()->SendChat(-1, TEAM_ALL, aBuf);
+ 	}
+ 
++	log_info("team", "%d:%s:%d", ClientId, Server()->ClientName(ClientId), Team);
+ 	str_format(aBuf, sizeof(aBuf), "team_join player='%d:%s' m_Team=%d", ClientId, Server()->ClientName(ClientId), Team);
+ 	GameServer()->Console()->Print(IConsole::OUTPUT_LEVEL_DEBUG, "game", aBuf);
+ 
+diff --git a/src/game/server/gamecontroller.h b/src/game/server/gamecontroller.h
+index d17e390f4..13dc9e009 100644
+--- a/src/game/server/gamecontroller.h
++++ b/src/game/server/gamecontroller.h
+@@ -222,6 +222,24 @@ public:
+ 
+ 	bool IsTeamPlay() const { return m_GameFlags & GAMEFLAG_TEAMS; }
+ 	int GameFlags() const { return m_GameFlags; }
++	int m_PluginMode = 0;
++	bool m_PluginFng = false;
++	int m_PluginFreezeAutokillSec = 0;
++	int m_PluginLaserFreezeSec = 0;
++	bool m_PluginHammerTeamUnfreeze = false;
++	bool m_PluginFngWeapons = false;
++	void SetTeamScores(int Red, int Blue) { m_aTeamscore[TEAM_RED] = Red; m_aTeamscore[TEAM_BLUE] = Blue; }
++	int TeamScoreRed() const { return m_aTeamscore[TEAM_RED]; }
++	int TeamScoreBlue() const { return m_aTeamscore[TEAM_BLUE]; }
++	void SetPluginMode(int Mode) {
++		m_PluginFng = (Mode == 3);
++		m_PluginMode = (Mode == 3) ? 2 : Mode;
++		m_GameFlags = 0;
++		SetTeamScores(0, 0);
++		if(Mode == 3) { m_PluginFreezeAutokillSec = 5; m_PluginLaserFreezeSec = 10; m_PluginHammerTeamUnfreeze = true; m_PluginFngWeapons = true; }
++		else if(Mode == 1) { m_PluginFreezeAutokillSec = 10; m_PluginLaserFreezeSec = 0; m_PluginHammerTeamUnfreeze = false; m_PluginFngWeapons = false; }
++		else { m_PluginFreezeAutokillSec = 0; m_PluginLaserFreezeSec = 0; m_PluginHammerTeamUnfreeze = false; m_PluginFngWeapons = false; }
++	}
+ 
+ 	// DDRace
+ 
 diff --git a/src/game/server/gamemodes/ddnetpp/ddnetpp.cpp b/src/game/server/gamemodes/ddnetpp/ddnetpp.cpp
-index 7087bf09f..f80e1ff30 100644
+index 7087bf09f..9a73bbfca 100644
 --- a/src/game/server/gamemodes/ddnetpp/ddnetpp.cpp
 +++ b/src/game/server/gamemodes/ddnetpp/ddnetpp.cpp
-@@ -436,7 +436,7 @@ void CGameControllerDDNetPP::PrintModWelcome(CPlayer *pPlayer)
+@@ -35,6 +35,8 @@ CGameControllerDDNetPP::~CGameControllerDDNetPP() = default;
+ int CGameControllerDDNetPP::SnapGameInfoExFlags(int SnappingClient, int DDRaceFlags)
+ {
+ 	int Flags = CGameControllerInstaCore::SnapGameInfoExFlags(SnappingClient, DDRaceFlags);
++	if(m_PluginMode > 0)
++		return Flags & ~(GAMEINFOFLAG_TIMESCORE | GAMEINFOFLAG_RACE | GAMEINFOFLAG_GAMETYPE_RACE | GAMEINFOFLAG_RACE_RECORD_MESSAGE);
+ 
+ 	CPlayer *pPlayer = GameServer()->GetPlayerOrNullptr(SnappingClient);
+ 	if(pPlayer)
+@@ -436,7 +438,7 @@ void CGameControllerDDNetPP::PrintModWelcome(CPlayer *pPlayer)
  	int ClientId = pPlayer->GetCid();
  	if(g_Config.m_SvInstagibMode)
  	{
@@ -2071,7 +2797,7 @@ index 7087bf09f..f80e1ff30 100644
  		return;
  	}
  
-@@ -445,7 +445,7 @@ void CGameControllerDDNetPP::PrintModWelcome(CPlayer *pPlayer)
+@@ -445,7 +447,7 @@ void CGameControllerDDNetPP::PrintModWelcome(CPlayer *pPlayer)
  	aSubGameType[0] = '\0';
  	if(g_Config.m_SvDDPPgametype[0])
  		str_format(aSubGameType, sizeof(aSubGameType), "(%s) ", g_Config.m_SvDDPPgametype);
@@ -2080,6 +2806,31 @@ index 7087bf09f..f80e1ff30 100644
  	GameServer()->SendChatTarget(ClientId, aWelcome);
  }
  
+diff --git a/src/game/server/gamemodes/ddnetpp/snapshot.cpp b/src/game/server/gamemodes/ddnetpp/snapshot.cpp
+index b24567526..1c4c12be3 100644
+--- a/src/game/server/gamemodes/ddnetpp/snapshot.cpp
++++ b/src/game/server/gamemodes/ddnetpp/snapshot.cpp
+@@ -73,6 +73,11 @@ void CGameControllerDDNetPP::SnapFlags(int SnappingClient)
+ 		GameData.m_FlagCarrierBlue = FlagCarrierBlue;
+ 		if(pMinigame)
+ 			pMinigame->SnapGameData(pPlayer, &GameData);
++		if(m_PluginMode == 2)
++		{
++			GameData.m_TeamscoreRed = TeamScoreRed();
++			GameData.m_TeamscoreBlue = TeamScoreBlue();
++		}
+ 		Server()->SnapNewItem(0, GameData);
+ 	}
+ }
+@@ -188,6 +193,8 @@ void CGameControllerDDNetPP::SnapPlayerInfo6(int SnappingClient, CPlayer *pPlaye
+ 		pMinigame->SnapPlayerInfo6(pPlayer, pPlayerInfo);
+ 
+ 	Lua()->OnSnapPlayerInfo6(SnappingClient, pPlayer, pPlayerInfo);
++	if(GameServer()->m_pController->m_PluginMode > 0)
++		pPlayerInfo->m_Score = pPlayer->m_PluginScore;
+ }
+ 
+ // SnappingClient - Client Id of the player that will receive the snapshot
 diff --git a/src/game/server/gamemodes/ddnetpp/tiles.cpp b/src/game/server/gamemodes/ddnetpp/tiles.cpp
 index cac0012bf..a0842affa 100644
 --- a/src/game/server/gamemodes/ddnetpp/tiles.cpp
@@ -2094,7 +2845,7 @@ index cac0012bf..a0842affa 100644
  		pPlayer->OnHumanVerify();
  
 diff --git a/src/game/server/player.cpp b/src/game/server/player.cpp
-index 9f852065d..60d75187a 100644
+index 9f852065d..50ce2c7eb 100644
 --- a/src/game/server/player.cpp
 +++ b/src/game/server/player.cpp
 @@ -202,6 +202,20 @@ void CPlayer::Tick()
@@ -2149,8 +2900,54 @@ index 9f852065d..60d75187a 100644
  	// ddnet-insta
  	GameServer()->m_pController->SnapClientInfo(SnappingClient, this, &ClientInfo);
  	Server()->SnapNewItem(TranslatedId, ClientInfo);
+@@ -389,6 +410,8 @@ void CPlayer::Snap(int SnappingClient)
+ 	int SnappingClientVersion = GameServer()->GetClientVersion(SnappingClient);
+ 	int Latency = SnappingClient == SERVER_DEMO_CLIENT ? m_Latency.m_Min : GameServer()->m_apPlayers[SnappingClient]->m_aCurLatency[m_ClientId];
+ 	int Score = GameServer()->m_pController->SnapPlayerScore(SnappingClient, this);
++	if(GameServer()->m_pController->m_PluginMode > 0)
++		Score = m_PluginScore;
+ 
+ 	if(!Server()->IsSixup(SnappingClient))
+ 	{
+@@ -518,6 +541,11 @@ void CPlayer::Snap(int SnappingClient)
+ 	IGameController::CFinishTime PlayerTime = GameServer()->m_pController->SnapPlayerTime(SnappingClient, this);
+ 	DDNetPlayer.m_FinishTimeSeconds = PlayerTime.m_Seconds;
+ 	DDNetPlayer.m_FinishTimeMillis = PlayerTime.m_Milliseconds;
++	if(GameServer()->m_pController->m_PluginMode > 0)
++	{
++		DDNetPlayer.m_FinishTimeSeconds = FinishTime::UNSET;
++		DDNetPlayer.m_FinishTimeMillis = FinishTime::UNSET;
++	}
+ 	Server()->SnapNewItem(TranslatedId, DDNetPlayer);
+ 
+ 	if(Server()->IsSixup(SnappingClient) && m_pCharacter && m_pCharacter->m_DDRaceState == ERaceState::STARTED &&
+@@ -783,6 +811,24 @@ CCharacter *CPlayer::ForceSpawn(vec2 Pos)
+ 	return m_pCharacter;
+ }
+ 
++void CPlayer::SetPluginTeam(int Team)
++{
++	if(Team < TEAM_SPECTATORS || Team > TEAM_BLUE || m_Team == Team)
++		return;
++	if(Team == TEAM_SPECTATORS || m_Team == TEAM_SPECTATORS)
++	{
++		SetTeam(Team, false);
++		return;
++	}
++	m_Team = Team;
++	protocol7::CNetMsg_Sv_Team Msg;
++	Msg.m_ClientId = m_ClientId;
++	Msg.m_Team = m_Team;
++	Msg.m_Silent = true;
++	Msg.m_CooldownTick = Server()->Tick();
++	Server()->SendPackMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_NORECORD, -1);
++}
++
+ void CPlayer::SetTeam(int Team, bool DoChatMsg)
+ {
+ 	KillCharacter();
 diff --git a/src/game/server/player.h b/src/game/server/player.h
-index 0429f833b..73a565a95 100644
+index 0429f833b..f111a0a2d 100644
 --- a/src/game/server/player.h
 +++ b/src/game/server/player.h
 @@ -128,6 +128,7 @@ public:
@@ -2171,6 +2968,15 @@ index 0429f833b..73a565a95 100644
  	CNetObj_ClientInfo m_ClientInfo = {};
  	bool m_ClientInfoValid = false;
  
+@@ -283,6 +286,8 @@ public:
+ 	bool m_BirthdayAnnounced;
+ 
+ 	int m_RescueMode;
++	int m_PluginScore = 0;
++	void SetPluginTeam(int Team);
+ 
+ 	CSaveTee m_LastTeleTee;
+ 	std::optional<CSaveTee> m_LastDeath;
 diff --git a/src/game/server/player_ddpp.h b/src/game/server/player_ddpp.h
 index f14d56960..770615e76 100644
 --- a/src/game/server/player_ddpp.h
@@ -2217,3 +3023,18 @@ index 468569473..9d6e1fb5c 100644
  #define DDNETPP_BUILD_DATE __DATE__ ", " __TIME__
  
  // extern const char *GIT_SHORTREV_HASH;
+diff --git a/src/insta/server/gamecontroller.cpp b/src/insta/server/gamecontroller.cpp
+index da857c98e..3b46a7a7b 100644
+--- a/src/insta/server/gamecontroller.cpp
++++ b/src/insta/server/gamecontroller.cpp
+@@ -21,7 +21,10 @@ void IGameController::OnCharacterDeathImpl(CCharacter *pVictim, int Killer, int
+ 
+ 	// TODO: remove DDPP_DIE and use the ddnet-insta approach instead
+ 	bool TodoRemoveFngScore = false;
++	int OrigWeapon = Weapon;
+ 	Killer = pVictim->DDPP_DIE(Killer, Weapon, TodoRemoveFngScore);
++	if(m_PluginMode > 0 && Killer >= 0 && Killer != pVictim->GetPlayer()->GetCid() && OrigWeapon >= 0)
++		Weapon = OrigWeapon;
+ 
+ 	int ModeSpecial = GameServer()->m_pController->OnCharacterDeath(pVictim, (Killer < 0) ? nullptr : GameServer()->m_apPlayers[Killer], Weapon);
+ 

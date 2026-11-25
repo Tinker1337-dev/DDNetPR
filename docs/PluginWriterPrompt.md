@@ -130,3 +130,12 @@ ddnet_sdk::plugin! {
   ```
 - **Защита стафф-команд:** даже если в `plugin!` указано `admin: true` (скрывает команду из `!help` для обычных игроков), в `Event::Chat` обязательно проверяй права:
   `if !api.is_staff(&player) { api.whisper(&player, "Нет прав."); return; }` (или `api.has_role(&player, "admin")`).
+
+### Режимы игры, скорборд и правила боя (`set_gamemode`, `set_freeze_autokill`, `set_laser_freeze`)
+* `api.set_gamemode(mode)` — переключает режим таблицы очков (`0` = Race/Time, `1` = Points FFA, `2` = Team Points Red/Blue, `3` = FNG Team Points).
+* `api.set_player_score(cid, score)` / `api.set_player_score_name(name, score)` — задаёт целые очки игрока в Tab (работает по `cid` или по нику).
+* `api.set_player_team(cid, team)` / `api.set_team_score(red, blue)` — переводит игрока в команду (`0`=Red, `1`=Blue, `-1`=Spec) и задаёт командный счёт.
+* `api.set_freeze_autokill(sec)` — включает автокилл в тайле фриза (`TILE_FREEZE`) через `sec` секунд (`0` = выкл) с персональным звуковым и визуальным отсчётом.
+* `api.set_laser_freeze(sec)` — лазер замораживает врагов на `sec` секунд без моргания предсказания (`m_FreezeEnd = -1`), со звуком и партиклами при разморозке (`0` = выкл).
+* `api.set_hammer_team_unfreeze(on)` — молот размораживает только тиммейтов и отбрасывает замороженных врагов.
+* `api.set_fng_weapons(on)` — выдача при спавне и всем живым игрокам строго молота и лазера (без пистолета).

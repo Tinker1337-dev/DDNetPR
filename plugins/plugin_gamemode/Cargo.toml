@@ -4,4 +4,4 @@ version = "11.0.0"
 edition = "2024"
 
 [dependencies]
-ddnet_sdk = { path = "/root/ddnet_sdk" }
+ddnet_sdk = { path = "../../crates/ddnet_sdk" }
