@@ -25,6 +25,21 @@ fn server_dir() -> &'static Path {
     })
 }
 fn spath(rel: &str) -> PathBuf { server_dir().join(rel) }
+use std::os::unix::io::AsRawFd;
+unsafe extern "C" { fn flock(fd: i32, operation: i32) -> i32; }
+fn acquire_instance_lock() -> Option<File> {
+    let f = OpenOptions::new().create(true).write(true).truncate(false).open(spath("plugins.lock")).ok()?;
+    let rc = unsafe { flock(f.as_raw_fd(), 2 | 4) };
+    if rc != 0 { None } else { Some(f) }
+}
+fn sync_track_pos(plugins: &Arc<Mutex<Vec<ManagedPlugin>>>) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static CUR: AtomicBool = AtomicBool::new(false);
+    let want = plugins.lock().map(|l| l.iter().any(|x| x.enabled && x.track_pos)).unwrap_or(false);
+    if CUR.swap(want, Ordering::SeqCst) != want {
+        send_fifo(if want { "track_positions 1" } else { "track_positions 0" });
+    }
+}
 
 #[derive(Clone, Default)]
 struct SessionInfo {
@@ -42,6 +57,7 @@ struct ManagedPlugin {
     crash_times: Vec<Instant>,
     last_pong: Instant,
     track_pos: bool,
+    is_admin: bool,
     reg_info: Option<String>,
     permissions: HashSet<String>,
     metrics: PluginMetrics,
@@ -424,7 +440,7 @@ fn spawn_plugin(
                             format!("REGISTER|{}", rest)
                         };
                         if let Ok(mut list) = plugins_ref.lock() {
-                            if let Some(pl) = list.iter_mut().find(|x| x.name == pname) { pl.reg_info = Some(reg.clone()); }
+                            if let Some(pl) = list.iter_mut().find(|x| x.name == pname) { pl.reg_info = Some(reg.clone()); if is_adm || matches!(pname.as_str(), "plugin_hub" | "plugin_mod" | "plugin_gamemode") { pl.is_admin = true; } }
                             if let Some(hub) = list.iter_mut().find(|x| x.enabled && x.name == "plugin_hub")
                                 && let Some(ref mut sin) = hub.stdin
                             {
@@ -441,12 +457,13 @@ fn spawn_plugin(
                         }
                         continue;
                     }
-                    if let Some(arg) = cmd.strip_prefix("@TRACK_POS ") {
+                    if let Some(arg) = cmd.strip_prefix("@TRACK_POS ").or_else(|| cmd.strip_prefix("track_positions ")) {
                         if let Ok(mut list) = plugins_ref.lock()
                             && let Some(pl) = list.iter_mut().find(|x| x.name == pname)
                         {
                             pl.track_pos = arg.trim() == "1";
                         }
+                        sync_track_pos(&plugins_ref);
                         continue;
                     }
                     if let Some(ack_rest) = cmd.strip_prefix("@ACK ") {
@@ -580,7 +597,10 @@ fn spawn_plugin(
                                 }
                             }
                             Some("DEL") => {
-                                if let Some(k) = parts.get(1) {
+                                if let Some(k) = parts.get(1)
+                                    && !k.starts_with("acc_coins:")
+                                    && !k.starts_with("acc_nick:")
+                                {
                                     if let Ok(mut m) = db.lock()
                                         && m.remove(*k).is_some()
                                     {
@@ -597,6 +617,9 @@ fn spawn_plugin(
                             }
                             Some("DEL_PREFIX") => {
                                 if let Some(pref) = parts.get(1)
+                                    && !pref.is_empty()
+                                    && !pref.starts_with("acc_")
+                                    && !pref.starts_with("role_acc:")
                                     && let Ok(mut m) = db.lock()
                                 {
                                     let before = m.len();
@@ -747,6 +770,14 @@ fn spawn_plugin(
                             }
                         }
                     } else {
+                        let head = cmd.split_whitespace().next().unwrap_or("");
+                        if matches!(head, "change_map" | "set_gamemode" | "set_fng_weapons" | "set_laser_freeze" | "set_freeze_autokill" | "set_hammer_team_unfreeze") {
+                            let is_adm = plugins_ref.lock().ok().and_then(|l| l.iter().find(|x| x.name == pname).map(|pl| pl.is_admin)).unwrap_or(false);
+                            if !is_adm {
+                                log_plugin_err(&pname, &format!("AdminRequired: {} blocked for non-admin plugin", cmd));
+                                continue;
+                            }
+                        }
                         if let Some(need) = required_permission(cmd) {
                             let ok = plugins_ref
                                 .lock()
@@ -868,6 +899,7 @@ fn dispatch_event(plugins: &Arc<Mutex<Vec<ManagedPlugin>>>, ev_line: &str, ev_se
 }
 
 fn main() {
+    let _lock_guard = match acquire_instance_lock() { Some(f) => f, None => { eprintln!("[PluginManager] Уже запущен другой экземпляр ddnet_plugins!"); return; } };
     let _ = fs::create_dir_all(spath("plugins"));
     let _ = fs::create_dir_all(spath("logs"));
     let _ = fs::create_dir_all(spath("configs"));
@@ -952,6 +984,7 @@ fn main() {
                                 crash_times: vec![],
                                 last_pong: Instant::now(),
                                 track_pos: false,
+                                is_admin: false,
                                 reg_info: None,
                                 permissions: HashSet::new(),
                                 metrics: PluginMetrics::default(),
