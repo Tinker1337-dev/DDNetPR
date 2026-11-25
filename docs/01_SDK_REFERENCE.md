@@ -28,7 +28,7 @@ ddnet_sdk::plugin! {
 ```
 
 ## 2. Основные события `Event`
-- **Сессия и чат:** `Join { player }`, `Leave { player }`, `Rename { old_name, new_name }`, `Chat { team, player, message }`, `Auth { cid, player, account }`, `Role { account, role }`, `BestClient { cid, version }`
+- **Сессия и чат:** `Join { player }`, `Leave { player }`, `Rename { old, new, new_name }`, `TeamChange { cid, player, team }`, `TeamChange { cid, player, team }`, `Chat { team, player, message }`, `Auth { cid, player, account }`, `Role { account, role }`, `BestClient { cid, version }`
 - **Тики и таймеры:** `Tick { uptime_sec }`, `FastTick { uptime_ms }` (включать только на время активности через `api.enable_fast_tick(true)`), `Scheduled { callback_id }`
 - **Позиции и ввод:** `api.track_positions(true)` -> координаты в `api.states: HashMap<i32, PlayerPos>` (`x, y, vx, vy, alive`); `Input { cid, fire, jump, hook, dir, target_x, target_y }`
 - **Бой и карта:** `Kill`, `HammerHit`, `WeaponHit`, `Damage`, `Death`, `Pickup`, `WeaponChange`, `Finish`, `Tile`, `TileCheck`, `HookAttach { cid, pos, hooked_cid }`, `HookDetach { cid, prev_hooked_cid }`
@@ -47,6 +47,7 @@ ddnet_sdk::plugin! {
 - **БД `plugins_kv.db`:** `db_set`, `db_add`, `db_get`, `db_prefix`, `db_del`, `db_del_prefix`, `db_add_by_account`, `db_transfer_by_account`
 
 ### Режимы игры, скорборд и правила боя (`set_gamemode`, `set_freeze_autokill`, `set_laser_freeze`)
+* `api.change_map(map)` — меняет текущую карту сервера (`change_map "<map>"`).
 * `api.set_gamemode(mode)` — переключает режим таблицы очков (`0` = Race/Time, `1` = Points FFA, `2` = Team Points Red/Blue, `3` = FNG Team Points).
 * `api.set_player_score(cid, score)` / `api.set_player_score_name(name, score)` — задаёт целые очки игрока в Tab (работает по `cid` или по нику).
 * `api.set_player_team(cid, team)` / `api.set_team_score(red, blue)` — переводит игрока в команду (`0`=Red, `1`=Blue, `-1`=Spec) и задаёт командный счёт.

@@ -97,6 +97,15 @@ pub enum Event {
         /// Legacy alias for new nickname.
         new_name: String,
     },
+    /// Player changed team (`0` = Red, `1` = Blue, `-1` = Spectator).
+    TeamChange {
+        /// Player client ID (`0..63`).
+        cid: i32,
+        /// Player nickname.
+        player: String,
+        /// Team ID (`0` = Red, `1` = Blue, `-1` = Spectator).
+        team: i32,
+    },
     /// Chat message or command received.
     Chat {
         /// Chat team channel (`0` = public).
@@ -1298,6 +1307,13 @@ impl ServerApi {
             id, kind, sub, cid, off_x, off_y, bob_amp
         ));
     }
+    /// Changes the active server map via `change_map "<map>"`.
+    pub fn change_map(&self, map: &str) {
+        let safe: String = map.chars().filter(|&c| c != '"' && c != '\n' && c != '\r').collect();
+        if !safe.is_empty() {
+            self.raw(&format!(r#"change_map "{}""#, safe));
+        }
+    }
     /// Sets scoreboard mode (`0` = Race/Time, `1` = Points, `2` = Team Points).
     pub fn set_gamemode(&self, mode: i32) { self.raw(&format!("set_gamemode {}", mode)); }
     /// Sets player scoreboard points by nickname.
@@ -1377,6 +1393,19 @@ impl ServerApi {
         }
         if let Some(rest) = body.strip_prefix("IPC|") {
             let (from, payload) = rest.split_once('|')?;
+            if from == "manager"
+                && let Some(t_rest) = payload.strip_prefix("TEAM|")
+            {
+                let p: Vec<&str> = t_rest.splitn(3, '|').collect();
+                if let (Some(cid_s), Some(team_s), Some(nick_s)) = (p.first(), p.get(1), p.get(2))
+                    && let (Ok(cid), Ok(team)) = (cid_s.parse::<i32>(), team_s.parse::<i32>())
+                {
+                    let player = nick_s.to_string();
+                    self.cids.insert(player.clone(), cid);
+                    self.names.insert(cid, player.clone());
+                    return Some(Event::TeamChange { cid, player, team });
+                }
+            }
             return Some(Event::Ipc {
                 from: from.to_string(),
                 payload: payload.to_string(),

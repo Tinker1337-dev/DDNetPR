@@ -7,6 +7,8 @@ pub trait EventHandler {
     fn on_join(&mut self, _api: &mut ServerApi, _player: String) {}
     /// Called when a player leaves the server.
     fn on_leave(&mut self, _api: &mut ServerApi, _player: String) {}
+    /// Called when a player changes team (`0` = Red, `1` = Blue, `-1` = Spectator).
+    fn on_team_change(&mut self, _api: &mut ServerApi, _cid: i32, _player: String, _team: i32) {}
     /// Called when a player changes nickname.
     fn on_rename(&mut self, _api: &mut ServerApi, _old: String, _new: String) {}
     /// Called on chat message; return EventAction::Cancel to block propagation.
@@ -68,6 +70,7 @@ pub trait EventHandler {
         match ev {
             Event::Join { player } => self.on_join(api, player),
             Event::Leave { player } => self.on_leave(api, player),
+            Event::TeamChange { cid, player, team } => self.on_team_change(api, cid, player, team),
             Event::Rename { old, new, .. } => self.on_rename(api, old, new),
             Event::Chat { team, player, message } => return self.on_chat(api, team, player, message),
             Event::BestClient { cid, version } => self.on_best_client(api, cid, version),

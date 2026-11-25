@@ -132,6 +132,7 @@ ddnet_sdk::plugin! {
   `if !api.is_staff(&player) { api.whisper(&player, "Нет прав."); return; }` (или `api.has_role(&player, "admin")`).
 
 ### Режимы игры, скорборд и правила боя (`set_gamemode`, `set_freeze_autokill`, `set_laser_freeze`)
+* `api.change_map(map)` — меняет текущую карту сервера (`change_map "<map>"`).
 * `api.set_gamemode(mode)` — переключает режим таблицы очков (`0` = Race/Time, `1` = Points FFA, `2` = Team Points Red/Blue, `3` = FNG Team Points).
 * `api.set_player_score(cid, score)` / `api.set_player_score_name(name, score)` — задаёт целые очки игрока в Tab (работает по `cid` или по нику).
 * `api.set_player_team(cid, team)` / `api.set_team_score(red, blue)` — переводит игрока в команду (`0`=Red, `1`=Blue, `-1`=Spec) и задаёт командный счёт.
