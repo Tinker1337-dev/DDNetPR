@@ -2,7 +2,7 @@ use ddnet_sdk::{Event, ServerApi};
 use std::collections::HashMap;
 use std::fs;
 
-const ADMINS_PATH: &str = "/root/server_run/build_admins.txt";
+const ADMINS_PATH: &str = "build_admins.txt";
 
 fn can_build(api: &ServerApi, player: &str) -> bool {
     let acc = match api.authed_accounts.get(player) {

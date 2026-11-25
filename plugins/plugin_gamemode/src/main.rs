@@ -21,7 +21,7 @@ impl Mode {
             _ => None,
         }
     }
-    fn code(self) -> i32 { match self { Self::Race => 0, Self::Block => 1, Self::Fng | Self::Tdm => 2 } }
+    fn code(self) -> i32 { match self { Self::Race => 0, Self::Block => 1, Self::Tdm => 2, Self::Fng => 3 } }
     fn is_team(self) -> bool { matches!(self, Self::Fng | Self::Tdm) }
     fn title(self) -> &'static str {
         match self {
@@ -33,7 +33,13 @@ impl Mode {
     }
 }
 
-fn reset_round(api: &ServerApi, mode: Mode, scores: &mut HashMap<String, i32>, teams: &mut HashMap<String, i32>, red: &mut i32, blue: &mut i32) {
+fn apply_fng_loadout(api: &ServerApi, cid: i32) {
+    for w in [1, 2, 3, 5] { api.set_ammo(cid, w, -1); }
+    api.give_weapon(cid, 0);
+    api.give_weapon(cid, 4);
+}
+
+fn reset_round(api: &ServerApi, mode: Mode, scores: &mut HashMap<String, i32>, teams: &mut HashMap<String, i32>, cids_map: &mut HashMap<String, i32>, red: &mut i32, blue: &mut i32) {
     scores.clear(); teams.clear(); *red = 0; *blue = 0;
     api.set_gamemode(mode.code());
     api.set_team_score(0, 0);
@@ -41,10 +47,18 @@ fn reset_round(api: &ServerApi, mode: Mode, scores: &mut HashMap<String, i32>, t
     pls.sort_by_key(|(_, c)| *c);
     for (_i, (n, cid)) in pls.into_iter().enumerate() {
         scores.insert(n.clone(), 0);
+        cids_map.insert(n.clone(), cid);
         api.set_player_score(cid, 0);
         let t = if mode.is_team() { -1 } else { 0 };
         teams.insert(n, t);
         api.set_player_team(cid, t);
+        if mode == Mode::Fng {
+            apply_fng_loadout(api, cid);
+        } else {
+            api.set_ammo(cid, 4, -1);
+            api.give_weapon(cid, 0);
+            api.give_weapon(cid, 1);
+        }
     }
 }
 
@@ -55,12 +69,13 @@ ddnet_sdk::plugin! {
     priority: Priority::Normal,
     cmds: [("mode", "[race|block|fng|tdm]", "Сменить режим"), ("team", "<red|blue|spec>", "Выбрать команду")],
     config: GamemodeConfig,
-    state: { init: bool = false, mode: Mode = Mode::Race, scores: HashMap<String, i32> = HashMap::new(), teams: HashMap<String, i32> = HashMap::new(), red: i32 = 0, blue: i32 = 0 },
+    state: { init: bool = false, mode: Mode = Mode::Race, scores: HashMap<String, i32> = HashMap::new(), teams: HashMap<String, i32> = HashMap::new(), cids_map: HashMap<String, i32> = HashMap::new(), red: i32 = 0, blue: i32 = 0 },
     handle(api, cfg, ev) {
-        if !init { init = true; mode = Mode::parse(&cfg.default_mode).unwrap_or(Mode::Race); reset_round(api, mode, &mut scores, &mut teams, &mut red, &mut blue); }
+        if !init { init = true; mode = Mode::parse(&cfg.default_mode).unwrap_or(Mode::Race); reset_round(api, mode, &mut scores, &mut teams, &mut cids_map, &mut red, &mut blue); }
         match ev {
             Event::Join { player, .. } => {
                 if let Some(&cid) = api.cids.get(&player) {
+                    cids_map.insert(player.clone(), cid);
                     api.set_player_score(cid, *scores.get(&player).unwrap_or(&0));
                     if mode.is_team() {
                         let t = *teams.entry(player).or_insert(-1);
@@ -68,24 +83,46 @@ ddnet_sdk::plugin! {
                     }
                 }
             }
+            Event::Pickup { cid, kind } if mode == Mode::Fng && cid >= 0 && kind != 0 && kind != 4 => {
+                apply_fng_loadout(api, cid);
+            }
+            Event::WeaponChange { cid, new, .. } if mode == Mode::Fng && cid >= 0 && new != 0 && new != 4 => {
+                apply_fng_loadout(api, cid);
+            }
+            Event::Ipc { payload, .. } => {
+                if let Some(rest) = payload.strip_prefix("TEAM|") {
+                    let p: Vec<&str> = rest.splitn(3, '|').collect();
+                    if let (Some(ts), Some(nick_s)) = (p.get(1), p.get(2))
+                        && let Ok(t) = ts.parse::<i32>()
+                    {
+                        let nick = nick_s.to_string();
+                        if let Some(Ok(c)) = p.first().map(|s| s.parse::<i32>()) { cids_map.insert(nick.clone(), c); }
+                        if t >= 0 { teams.insert(nick, t); } else { teams.remove(&nick); }
+                    }
+                }
+            }
             Event::Leave { player } => { teams.remove(&player); }
-            Event::Kill { killer, victim, .. } if mode != Mode::Race && !killer.is_empty() && killer != victim => {
-                let kt = *teams.get(&killer).unwrap_or(&0);
-                let vt = *teams.get(&victim).unwrap_or(&0);
-                if mode.is_team() && kt == vt { return; }
+            Event::Kill { killer, victim, weapon } if mode != Mode::Race && !killer.is_empty() && killer != victim => {
+                let kt = *teams.get(&killer).unwrap_or(&-1);
+                let vt = *teams.get(&victim).unwrap_or(&-1);
+                if mode.is_team() && kt >= 0 && kt == vt { return; }
+                let pts = if mode == Mode::Fng && weapon == 4 { 5 } else { 1 };
                 let sc = scores.entry(killer.clone()).or_insert(0);
-                *sc += 1;
-                if let Some(&kcid) = api.cids.get(&killer) { api.set_player_score(kcid, *sc); }
+                *sc += pts;
+                api.raw(&format!("set_player_score \"{}\" {}", killer, *sc));
+                if mode == Mode::Fng && pts == 5 {
+                    api.say(&format!("[FNG] {} закинул {} в шипы (+5 очков)!", killer, victim));
+                }
                 if mode.is_team() {
-                    if kt == 0 { red += 1; } else { blue += 1; }
+                    if kt == 1 { blue += pts; } else { red += pts; }
                     api.set_team_score(red, blue);
                     if cfg.score_limit > 0 && (red >= cfg.score_limit || blue >= cfg.score_limit) {
                         api.say(&format!("[Режим] Победила команда {} ({}:{})!", if red >= cfg.score_limit { "Red" } else { "Blue" }, red, blue));
-                        reset_round(api, mode, &mut scores, &mut teams, &mut red, &mut blue);
+                        reset_round(api, mode, &mut scores, &mut teams, &mut cids_map, &mut red, &mut blue);
                     }
                 } else if cfg.score_limit > 0 && *sc >= cfg.score_limit {
                     api.say(&format!("[Режим] {} победил ({} очков)!", killer, *sc));
-                    reset_round(api, mode, &mut scores, &mut teams, &mut red, &mut blue);
+                    reset_round(api, mode, &mut scores, &mut teams, &mut cids_map, &mut red, &mut blue);
                 }
             }
             Event::Chat { player, message, .. } => { eprintln!("[gamemode] {} -> {}", player, message);
@@ -94,7 +131,7 @@ ddnet_sdk::plugin! {
                 if cmd.eq_ignore_ascii_case("!mode") {
                     if p.len() == 1 { api.whisper(&player, &format!("[Режим] {} | Red {}:{} Blue", mode.title(), red, blue)); }
                     else if !api.is_staff(&player) { api.whisper(&player, "Только для модераторов и владельца."); }
-                    else if let Some(m) = Mode::parse(p.get(1).copied().unwrap_or("")) { mode = m; reset_round(api, mode, &mut scores, &mut teams, &mut red, &mut blue); api.say(&format!("[Режим] {} включил: {}!", player, mode.title())); }
+                    else if let Some(m) = Mode::parse(p.get(1).copied().unwrap_or("")) { mode = m; reset_round(api, mode, &mut scores, &mut teams, &mut cids_map, &mut red, &mut blue); api.say(&format!("[Режим] {} включил: {}!", player, mode.title())); }
                     else { api.whisper(&player, "Доступно: !mode race | block | fng | tdm"); }
                 } else if cmd.eq_ignore_ascii_case("!team") && mode.is_team() {
                     let Some(&cid) = api.cids.get(&player) else { return; };

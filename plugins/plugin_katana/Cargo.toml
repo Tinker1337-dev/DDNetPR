@@ -7,3 +7,7 @@ authors = ["Tinker1337"]
 [dependencies]
 ddnet_sdk = { path = "../../crates/ddnet_sdk" }
 
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true

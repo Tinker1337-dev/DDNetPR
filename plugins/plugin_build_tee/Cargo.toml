@@ -6,3 +6,6 @@ edition = "2024"
 [dependencies]
 ddnet_sdk = { path = "../../crates/ddnet_sdk" }
 
+[profile.release]
+opt-level = 3
+lto = true

@@ -39,6 +39,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "plugin_gamemode"
+version = "11.0.0"
+dependencies = [
+ "ddnet_sdk",
+]
+
+[[package]]
 name = "plugin_hub"
 version = "0.1.0"
 dependencies = [

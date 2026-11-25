@@ -228,6 +228,14 @@ fn parse_log_event(line: &str) -> String {
             return format!("AUTH|{}|{}|{}", cid.trim(), nick.trim(), acc.trim());
         }
     }
+    if let Some(pos) = line.find("I team:") {
+        let rest = line[pos + 7..].trim();
+        if let Some((cid_s, tail)) = rest.split_once(':')
+            && let Some((nick, team_s)) = tail.rsplit_once(':')
+        {
+            return format!("IPC|manager|TEAM|{}|{}|{}", cid_s.trim(), team_s.trim(), nick.trim());
+        }
+    }
     if let Some(pos) = line.find("I chat:") {
         let rest = line[pos + 7..].trim();
         if let Some(after_cid) = rest.split_once(':')

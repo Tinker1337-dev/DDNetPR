@@ -1300,6 +1300,16 @@ impl ServerApi {
     }
     /// Sets scoreboard mode (`0` = Race/Time, `1` = Points, `2` = Team Points).
     pub fn set_gamemode(&self, mode: i32) { self.raw(&format!("set_gamemode {}", mode)); }
+    /// Sets player scoreboard points by nickname.
+    pub fn set_player_score_name(&self, name: &str, score: i32) { self.raw(&format!(r#"set_player_score "{}" {}"#, name, score)); }
+    /// Sets freeze-tile auto-kill timeout in seconds (`0` = off).
+    pub fn set_freeze_autokill(&self, sec: i32) { self.raw(&format!("set_freeze_autokill {}", sec)); }
+    /// Sets laser freeze duration in seconds (`0` = off).
+    pub fn set_laser_freeze(&self, sec: i32) { self.raw(&format!("set_laser_freeze {}", sec)); }
+    /// Enables or disables teammate-only hammer unfreeze.
+    pub fn set_hammer_team_unfreeze(&self, on: bool) { self.raw(&format!("set_hammer_team_unfreeze {}", if on { 1 } else { 0 })); }
+    /// Enables or disables FNG spawn loadout (hammer + laser only).
+    pub fn set_fng_weapons(&self, on: bool) { self.raw(&format!("set_fng_weapons {}", if on { 1 } else { 0 })); }
     /// Sets a player's integer scoreboard points.
     pub fn set_player_score(&self, cid: i32, score: i32) { self.raw(&format!("set_player_score {} {}", cid, score)); }
     /// Sets a player's team (`0` = Red, `1` = Blue, `-1` = Spectators).
