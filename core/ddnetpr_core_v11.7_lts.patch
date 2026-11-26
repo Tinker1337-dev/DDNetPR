@@ -75,14 +75,14 @@ index 83fa5dbb7..f0d85ff9c 100644
  	if(!pSqlServer->Step(&End, pError, ErrorSize))
 diff --git a/src/game/server/ddnetpp/login_ratelimit.h b/src/game/server/ddnetpp/login_ratelimit.h
 new file mode 100644
-index 000000000..885106daf
+index 000000000..8aaa6eec2
 --- /dev/null
 +++ b/src/game/server/ddnetpp/login_ratelimit.h
 @@ -0,0 +1,148 @@
 +#ifndef GAME_SERVER_DDNETPP_LOGIN_RATELIMIT_H
 +#define GAME_SERVER_DDNETPP_LOGIN_RATELIMIT_H
 +
-+#include <base/system.h>
++#include <base/types.h>
 +#include <algorithm>
 +#include <cstdint>
 +
