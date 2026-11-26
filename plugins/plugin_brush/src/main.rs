@@ -3,9 +3,31 @@ use std::collections::HashMap;
 struct BrushUser { active: bool, style: i32, tx: f32, ty: f32, last_pt: Option<(f32, f32)>, prev_jump: bool, prev_hook: bool }
 fn style_name(s: i32) -> &'static str { match s { 2 => "Зеленый лазер", 3 => "Сердечки (вечные)", 4 => "Щиты брони (вечные)", 5 => "Огненный шлейф", 6 => "Размораживающий лазер", _ => "Синий лазер" } }
 fn dist_sq_seg(px: f32, py: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> f32 { let (dx, dy) = (x2 - x1, y2 - y1); let len2 = dx * dx + dy * dy; let t = if len2 < 0.001 { 0.0 } else { (((px - x1) * dx + (py - y1) * dy) / len2).clamp(0.0, 1.0) }; let (cx, cy) = (x1 + t * dx, y1 + t * dy); (px - cx) * (px - cx) + (py - cy) * (py - cy) }
+/// Проверяет доступ к кисти по авторизованному аккаунту (/login), роли персонала или списку build_admins.txt.
+fn can_use_brush_with_list(api: &ServerApi, player: &str, admins_txt: &str) -> bool {
+    let acc = match api.authed_accounts.get(player) {
+        Some(a) if !a.is_empty() => a.as_str(),
+        _ => return false,
+    };
+    if api.is_staff(player) {
+        return true;
+    }
+    admins_txt
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .any(|l| l.eq_ignore_ascii_case(acc))
+}
+
+fn can_use_brush(api: &ServerApi, player: &str) -> bool {
+    let admins_txt = std::fs::read_to_string("build_admins.txt").unwrap_or_default();
+    can_use_brush_with_list(api, player, &admins_txt)
+}
+
 fn main() {
     let mut api = ServerApi::new();
-    api.register_plugin("brush", "!brush [1-6|clear] — кисть v11.7");
+    api.set_manifest("11.0.0", &[]);
+    api.register_admin_plugin("brush", "!brush [1-6|clear] — кисть v11.7");
     api.register_cmd("brush", "[1-6|clear]", "Кисть: 1-синий, 2-зеленый, 3-сердца, 4-броня, 5-огонь, 6-антифриз, clear");
     let mut users: HashMap<i32, BrushUser> = HashMap::new();
     let mut segs: Vec<(i32, f32, f32, f32, f32)> = Vec::new();
@@ -13,10 +35,14 @@ fn main() {
     let mut rr_idx: usize = 0;
     api.run(move |api, ev| {
         match ev {
-            Event::Chat { player, message, .. } => { let _ = std::fs::write("/tmp/brush_dbg.txt", format!("p={:?} m={:?} staff={} cids={:?} accs={:?}", player, message, api.is_staff(&player), api.cids, api.accounts));
+            Event::Chat { player, message, .. } => {
                 let msg = message.trim();
                 if msg == "!brush" || msg.starts_with("!brush ") {
-                    let cid = api.player_cids.get(&player).or_else(|| api.cids.get(&player)).copied().unwrap_or(0); if !api.is_staff(&player) && !std::fs::read_to_string("build_admins.txt").unwrap_or_default().lines().any(|l| !l.trim().is_empty() && player.contains(l.trim())) { api.broadcast_to(cid, "[Staff] Сначала войдите в аккаунт (/login) с ролью Staff/Admin!"); return; }
+                    let cid = api.player_cids.get(&player).or_else(|| api.cids.get(&player)).copied().unwrap_or(0);
+                    if !can_use_brush(api, &player) {
+                        api.broadcast_to(cid, "[Staff] Сначала войдите в аккаунт (/login) с ролью Staff/Builder!");
+                        return;
+                    }
                     let arg_str = msg.strip_prefix("!brush").unwrap_or("").trim();
                     if arg_str.eq_ignore_ascii_case("clear") {
                         segs.clear(); api.clear_visual_lasers();
@@ -60,4 +86,35 @@ fn main() {
         }
         
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_brush_command_permissions() {
+        let mut api = ServerApi::new();
+        let admins = "BuilderAcc\n";
+
+        // Неавторизованный игрок с ником, содержащим имя админа, должен получить отказ
+        assert!(!can_use_brush_with_list(&api, "BuilderAcc_fake", admins));
+        assert!(!can_use_brush_with_list(&api, "BuilderAcc", admins));
+
+        // Обычный авторизованный игрок без роли и вне build_admins.txt
+        api.authed_accounts.insert("Guest".to_string(), "GuestAcc".to_string());
+        api.accounts.insert("Guest".to_string(), "GuestAcc".to_string());
+        api.roles.insert("GuestAcc".to_string(), "user".to_string());
+        assert!(!can_use_brush_with_list(&api, "Guest", admins));
+
+        // Авторизованный строитель из build_admins.txt
+        api.authed_accounts.insert("Nick1".to_string(), "BuilderAcc".to_string());
+        assert!(can_use_brush_with_list(&api, "Nick1", admins));
+
+        // Авторизованный сотрудник стаффа
+        api.authed_accounts.insert("Masua".to_string(), "Tinker1337".to_string());
+        api.accounts.insert("Masua".to_string(), "Tinker1337".to_string());
+        api.roles.insert("Tinker1337".to_string(), "mod".to_string());
+        assert!(can_use_brush_with_list(&api, "Masua", ""));
+    }
 }

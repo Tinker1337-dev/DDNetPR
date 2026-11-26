@@ -55,17 +55,28 @@ fn give_super_kit(api: &ServerApi, cid: i32) {
     }
 }
 
+/// Сбрасывает все эффекты суперрежима и невидимости для одного CID.
+fn reset_player_super_effects(api: &ServerApi, cid: i32, reset_vanish: bool) {
+    api.set_invincible(cid, false);
+    api.set_endless_jump(cid, false);
+    api.set_endless_hook(cid, false);
+    api.set_phys(cid, "jetpack", false);
+    api.set_phys(cid, "hammer_hit", true);
+    if reset_vanish {
+        api.set_phys(cid, "collision", true);
+        api.set_phys(cid, "hook_hit", true);
+    }
+    for w in 1..=4 {
+        api.set_ammo(cid, w, if w == 1 { 10 } else { -1 });
+    }
+    api.set_color(cid, false, 0, 0);
+}
+
 fn toggle_super(api: &mut ServerApi, cid: i32, player: &str, supers: &mut HashSet<i32>, active_wpn: &mut HashMap<i32, i32>) {
     if supers.remove(&cid) {
         active_wpn.remove(&cid);
-        api.set_invincible(cid, false); api.set_endless_jump(cid, false);
-        api.set_endless_hook(cid, false); api.set_phys(cid, "jetpack", false);
-        api.set_phys(cid, "hammer_hit", true);
-        // Забираем выданные супер-оружки (слоты 1..=4), чтобы не оставались пустыми
-        for w in 1..=4 {
-            api.set_ammo(cid, w, if w == 1 { 10 } else { -1 });
-        }
-        api.set_color(cid, false, 0, 0); api.play_sound(cid, 30);
+        reset_player_super_effects(api, cid, false);
+        api.play_sound(cid, 30);
         api.whisper(player, "[SUPER] Режим бога ВЫКЛЮЧЕН.");
     } else {
         supers.insert(cid);
@@ -79,17 +90,23 @@ fn toggle_super(api: &mut ServerApi, cid: i32, player: &str, supers: &mut HashSe
     api.track_positions(!supers.is_empty());
 }
 
+/// Проверяет право игрока на выполнение админ-команд плагина super (включая алиас !god).
+fn can_exec_super_cmd(api: &ServerApi, player: &str, cmd: &str) -> bool {
+    matches!(cmd, "!super" | "!god" | "!vanish" | "!tp" | "!bring") && api.is_staff(player)
+}
+
 fn main() {
     let mut api = ServerApi::new();
-    api.register_admin_plugin("super", "Режим бога: !super, !tp, !bring, !vanish");
+    api.set_manifest("11.0.0", &["player_control"]);
+    api.register_admin_plugin("super", "Режим бога: !super (!god), !tp, !bring, !vanish");
     let (mut supers, mut vanishes, mut fire_held, mut hook_held, mut active_wpn, mut fly_tick) =
         (HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashMap::new(), 0u32);
     api.run_intercept(|api, ev| { match ev {
         Event::Chat { player, message, .. } => {
-            if !api.is_staff(&player) { return EventAction::Continue; }
-            let Some(&cid) = api.player_cids.get(&player) else { return EventAction::Continue };
             let mut parts = message.trim().splitn(2, " ");
             let (cmd, arg) = (parts.next().unwrap_or(""), parts.next().unwrap_or("").trim());
+            if !can_exec_super_cmd(api, &player, cmd) { return EventAction::Continue; }
+            let Some(&cid) = api.player_cids.get(&player) else { return EventAction::Continue };
             match cmd {
                 "!super" | "!god" => toggle_super(api, cid, &player, &mut supers, &mut active_wpn),
                 "!vanish" => {
@@ -119,7 +136,7 @@ fn main() {
         }
         Event::PlayerState { cid, frozen, weapon, .. } => if supers.contains(&cid) {
             if frozen != 0 { api.set_freeze(cid, 0); }
-            if weapon >= 0 { active_wpn.insert(cid, weapon); } else { give_super_kit(api, cid); }
+            api.set_invincible(cid, true); api.set_endless_jump(cid, true); api.set_endless_hook(cid, true); api.set_phys(cid, "jetpack", true); api.set_phys(cid, "hammer_hit", false); if weapon >= 0 { active_wpn.insert(cid, weapon); } else { give_super_kit(api, cid); }
         },
         Event::Input { cid, fire, hook, target_x, target_y, .. } => {
             if fire == 0 { fire_held.remove(&cid); }
@@ -193,21 +210,106 @@ fn main() {
         }
         // Сбрасываем активный супер-режим и невидимость при смене карты
         Event::Ipc { from, payload } if from == "manager" && payload.starts_with("MAP_CHANGE|") => {
-            supers.clear();
-            vanishes.clear();
-            fire_held.clear();
-            hook_held.clear();
-            active_wpn.clear();
-            api.track_positions(false);
+            handle_map_change(api, &mut supers, &mut vanishes, &mut fire_held, &mut hook_held, &mut active_wpn);
+        }
+        Event::Join { player } => {
+            if let Some(&cid) = api.cids.get(&player) { supers.remove(&cid); vanishes.remove(&cid); fire_held.remove(&cid); hook_held.remove(&cid); active_wpn.remove(&cid); reset_player_super_effects(api, cid, true); }
         }
         Event::Leave { .. } => {
-            api.states.retain(|&c, _| api.player_cids.values().any(|&v| v == c));
-            supers.retain(|&c| api.player_cids.values().any(|&v| v == c));
-            vanishes.retain(|&c| api.player_cids.values().any(|&v| v == c));
-            fire_held.retain(|&c| api.player_cids.values().any(|&v| v == c));
-            active_wpn.retain(|&c, _| api.player_cids.values().any(|&v| v == c));
-            api.track_positions(!supers.is_empty());
+            handle_player_leave(api, &mut supers, &mut vanishes, &mut fire_held, &mut hook_held, &mut active_wpn);
         }
         _ => {}
     } EventAction::Continue });
+}
+
+/// Обрабатывает смену карты: сбрасывает эффекты по каждому CID и очищает состояние плагина.
+fn handle_map_change(
+    api: &mut ServerApi,
+    supers: &mut HashSet<i32>,
+    vanishes: &mut HashSet<i32>,
+    fire_held: &mut HashSet<i32>,
+    hook_held: &mut HashSet<i32>,
+    active_wpn: &mut HashMap<i32, i32>,
+) {
+    let mut all_cids: HashSet<i32> = supers.iter().copied().collect();
+    all_cids.extend(vanishes.iter().copied());
+    for cid in all_cids {
+        reset_player_super_effects(api, cid, true);
+    }
+    supers.clear();
+    vanishes.clear();
+    fire_held.clear();
+    hook_held.clear();
+    active_wpn.clear();
+    api.track_positions(false);
+}
+
+/// Обрабатывает выход игрока: очищает все коллекции по вышедшим CID без утечек на новый коннект.
+fn handle_player_leave(
+    api: &mut ServerApi,
+    supers: &mut HashSet<i32>,
+    vanishes: &mut HashSet<i32>,
+    fire_held: &mut HashSet<i32>,
+    hook_held: &mut HashSet<i32>,
+    active_wpn: &mut HashMap<i32, i32>,
+) {
+    api.states.retain(|&c, _| api.player_cids.values().any(|&v| v == c));
+    supers.retain(|&c| api.player_cids.values().any(|&v| v == c));
+    vanishes.retain(|&c| api.player_cids.values().any(|&v| v == c));
+    fire_held.retain(|&c| api.player_cids.values().any(|&v| v == c));
+    hook_held.retain(|&c| api.player_cids.values().any(|&v| v == c));
+    active_wpn.retain(|&c, _| api.player_cids.values().any(|&v| v == c));
+    api.track_positions(!supers.is_empty());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[test]
+    fn test_super_commands_permissions() {
+        let mut api = ServerApi::new();
+        api.accounts.insert("Masua".to_string(), "Tinker1337".to_string());
+        api.roles.insert("Tinker1337".to_string(), "owner".to_string());
+        api.accounts.insert("User1".to_string(), "UserAcc".to_string());
+        api.roles.insert("UserAcc".to_string(), "user".to_string());
+
+        for cmd in ["!super", "!god", "!vanish", "!tp", "!bring"] {
+            assert!(can_exec_super_cmd(&api, "Masua", cmd), "Staff must run {}", cmd);
+            assert!(!can_exec_super_cmd(&api, "User1", cmd), "Regular user must not run {}", cmd);
+            assert!(!can_exec_super_cmd(&api, "Unauthed", cmd), "Unauthed must not run {}", cmd);
+        }
+        assert!(!can_exec_super_cmd(&api, "Masua", "!other"));
+    }
+
+    #[test]
+    fn test_super_single_and_repeated_map_change() {
+        let mut api = ServerApi::new();
+        let (mut supers, mut vanishes, mut fire_held, mut hook_held, mut active_wpn) =
+            (HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashMap::new());
+
+        // Включаем суперрежим для CID 0 и vanish для CID 1 на первой карте
+        toggle_super(&mut api, 0, "Masua", &mut supers, &mut active_wpn);
+        vanishes.insert(1);
+        fire_held.insert(0);
+        hook_held.insert(0);
+        assert!(supers.contains(&0));
+        assert!(!supers.contains(&1));
+
+        // Обычная смена карты: должны сброситься оба CID и все временные множества
+        handle_map_change(&mut api, &mut supers, &mut vanishes, &mut fire_held, &mut hook_held, &mut active_wpn);
+        assert!(supers.is_empty());
+        assert!(vanishes.is_empty());
+        assert!(fire_held.is_empty());
+        assert!(hook_held.is_empty());
+        assert!(active_wpn.is_empty());
+
+        // Повторное включение на второй карте и повторная смена карты
+        toggle_super(&mut api, 2, "dezo", &mut supers, &mut active_wpn);
+        assert!(supers.contains(&2));
+        handle_map_change(&mut api, &mut supers, &mut vanishes, &mut fire_held, &mut hook_held, &mut active_wpn);
+        assert!(supers.is_empty());
+        assert!(active_wpn.is_empty());
+    }
 }

@@ -9,6 +9,14 @@ enum Pending {
     Pay { from: String, from_acc: String, to_nick: String, to_acc: String, amount: i64 },
 }
 
+fn cleanup_player_pending(pending: &mut HashMap<String, Pending>, player: &str) {
+    pending.retain(|_, v| match v {
+        Pending::Bal { player: p } | Pending::Dice { player: p, .. } => p != player,
+        Pending::Give { sender, to_nick, .. } => sender != player && to_nick != player,
+        Pending::Pay { from, to_nick, .. } => from != player && to_nick != player,
+    });
+}
+
 fn rand_num(max: u64) -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().subsec_nanos() as u64 % max + 1
 }
@@ -23,7 +31,9 @@ fn main() {
     api.db_get_prefix("init_nicks", "acc_nick:");
 
     api.run(|api, event| match event {
-        Event::Join { player } => api.say(&format!("[City] Добро пожаловать, {}! Войди в /login для зарплаты и !help для команд.", player)),
+        Event::Join { player } => { cleanup_player_pending(&mut pending, &player); api.say(&format!("[City] Добро пожаловать, {}! Войди в /login для зарплаты и !help для команд.", player)); }
+        Event::Leave { player } => { cleanup_player_pending(&mut pending, &player); }
+        Event::Ipc { from, payload } if from == "manager" && payload.starts_with("MAP_CHANGE|") => { pending.clear(); }
         Event::Auth { player, account, .. } => {
             if !player.is_empty() && !account.is_empty() {
                 acc_nicks.insert(account.clone(), player.clone());
@@ -188,4 +198,29 @@ fn main() {
         }
         _ => {}
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_city_leave_and_map_change_cleanup_preserves_db() {
+        let mut pending: HashMap<String, Pending> = HashMap::new();
+        let mut acc_nicks: HashMap<String, String> = HashMap::new();
+        acc_nicks.insert("AccAlice".into(), "Alice".into());
+        pending.insert("d_1".into(), Pending::Dice { player: "Alice".into(), acc: "AccAlice".into(), bet: 50 });
+        pending.insert("p_2".into(), Pending::Pay { from: "Bob".into(), from_acc: "AccBob".into(), to_nick: "Alice".into(), to_acc: "AccAlice".into(), amount: 25 });
+        pending.insert("b_3".into(), Pending::Bal { player: "Charlie".into() });
+
+        cleanup_player_pending(&mut pending, "Alice");
+        assert!(!pending.contains_key("d_1"));
+        assert!(!pending.contains_key("p_2"));
+        assert!(pending.contains_key("b_3"));
+        assert_eq!(acc_nicks.get("AccAlice").map(String::as_str), Some("Alice"));
+
+        pending.clear();
+        assert!(pending.is_empty());
+        assert_eq!(acc_nicks.get("AccAlice").map(String::as_str), Some("Alice"));
+    }
 }

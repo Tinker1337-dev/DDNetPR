@@ -4,7 +4,8 @@ use std::fs;
 
 const ADMINS_PATH: &str = "build_admins.txt";
 
-fn can_build(api: &ServerApi, player: &str) -> bool {
+/// Проверяет право игрока на строительство по авторизованному аккаунту, роли стаффа или списку build_admins.txt.
+fn can_build_with_list(api: &ServerApi, player: &str, admins_txt: &str) -> bool {
     let acc = match api.authed_accounts.get(player) {
         Some(a) if !a.is_empty() => a.as_str(),
         _ => return false,
@@ -12,16 +13,24 @@ fn can_build(api: &ServerApi, player: &str) -> bool {
     if api.is_staff(player) {
         return true;
     }
+    admins_txt
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .any(|l| l.eq_ignore_ascii_case(acc))
+}
+
+fn can_build(api: &ServerApi, player: &str) -> bool {
     if fs::metadata(ADMINS_PATH).is_err() {
         let _ = fs::write(ADMINS_PATH, "Tinker1337\n");
     }
-    fs::read_to_string(ADMINS_PATH)
-        .map(|s| s.lines().any(|l| l.trim().eq_ignore_ascii_case(acc)))
-        .unwrap_or(false)
+    let admins_txt = fs::read_to_string(ADMINS_PATH).unwrap_or_default();
+    can_build_with_list(api, player, &admins_txt)
 }
 
 fn main() {
     let mut api = ServerApi::new();
+    api.set_manifest("11.0.0", &["tile_edit"]);
     api.register_admin_plugin("build", "!build [1|3|9|0|off|clear] — фан-строительство (по логину)");
     api.register_cmd("build", "[tile|off|clear]", "1=стена, 3=нехук, 9=фриз, 0=сломать, clear=сброс, off=выкл");
 
@@ -95,4 +104,30 @@ fn main() {
         }
         _ => {}
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_command_permissions() {
+        let mut api = ServerApi::new();
+        let admins = "BuilderAcc\n";
+
+        assert!(!can_build_with_list(&api, "BuilderAcc", admins));
+
+        api.authed_accounts.insert("Guest".to_string(), "GuestAcc".to_string());
+        api.accounts.insert("Guest".to_string(), "GuestAcc".to_string());
+        api.roles.insert("GuestAcc".to_string(), "user".to_string());
+        assert!(!can_build_with_list(&api, "Guest", admins));
+
+        api.authed_accounts.insert("BuilderNick".to_string(), "BuilderAcc".to_string());
+        assert!(can_build_with_list(&api, "BuilderNick", admins));
+
+        api.authed_accounts.insert("Masua".to_string(), "Tinker1337".to_string());
+        api.accounts.insert("Masua".to_string(), "Tinker1337".to_string());
+        api.roles.insert("Tinker1337".to_string(), "helper".to_string());
+        assert!(can_build_with_list(&api, "Masua", ""));
+    }
 }

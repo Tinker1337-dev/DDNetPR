@@ -4,7 +4,6 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const MASTER_PASS: &str = "29052019";
 const MOD_LOG: &str = "logs/mod.log";
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -23,6 +22,28 @@ impl Role {
     }
 }
 
+/// Проверяет, имеет ли роль доступ к указанной команде модерации.
+fn can_exec_mod_cmd(role: Role, cmd: &str) -> bool {
+    match cmd {
+        "!staff" | "!ids" | "!hud" | "!warn" | "!mute" | "!kick" => role >= Role::Helper,
+        "!check" | "!uncheck" | "!ban" | "!unban" | "!freeze" => role >= Role::Mod,
+        "!setrole" => role >= Role::Owner,
+        _ => false,
+    }
+}
+
+fn cleanup_mod_session(
+    player: &str,
+    cid_opt: Option<i32>,
+    hud_enabled: &mut HashSet<String>,
+    pending_auth: &mut HashMap<u64, (i32, String, String)>,
+    queue: &mut HashMap<String, QueuedCmd>,
+) {
+    hud_enabled.remove(player);
+    pending_auth.retain(|_, (c, p, _)| p != player && cid_opt != Some(*c));
+    queue.retain(|_, q| q.sender != player);
+}
+
 struct QueuedCmd { sender: String, account: String, cmd: String, args: Vec<String> }
 
 fn audit_log(actor: &str, acc: &str, action: &str, target: &str, reason: &str) {
@@ -38,6 +59,7 @@ fn resolve_cid(api: &ServerApi, target: &str) -> Option<i32> {
 
 fn main() {
     let mut api = ServerApi::new();
+    api.set_manifest("11.0.0", &["moderation", "player_control"]);
     api.register_admin_plugin("mod", "Модерация (после /login): !check, !uncheck, !hud, !warn, !mute, !kick, !ban, !unban, !freeze, !setrole, !ids, !staff");
 
     let mut queue: HashMap<String, QueuedCmd> = HashMap::new();
@@ -56,6 +78,7 @@ fn main() {
         }
         Event::Scheduled { callback_id } => {
             if let Some((cid, player, account)) = pending_auth.remove(&callback_id) {
+                if !api.online.contains(&player) || api.cids.get(&player).copied() != Some(cid) { return; }
                 if let Some(r_str) = api.roles.get(&account) {
                     let role = Role::from_str(r_str);
                     if role >= Role::Helper {
@@ -74,8 +97,25 @@ fn main() {
                 }
             }
         }
+        Event::Join { player } => {
+            let cid_opt = api.cids.get(&player).copied();
+            cleanup_mod_session(&player, cid_opt, &mut hud_enabled, &mut pending_auth, &mut queue);
+            if let Some(cid) = cid_opt { api.cmd(&format!("spec_hud {} 0", cid)); api.set_vip_plus(cid, false); }
+        }
+        Event::Rename { old, new_name, .. } => {
+            if hud_enabled.remove(&old) { hud_enabled.insert(new_name.clone()); }
+            if under_check.remove(&old) { under_check.insert(new_name.clone()); }
+            for (_, (_, p, _)) in pending_auth.iter_mut() { if p == &old { *p = new_name.clone(); } }
+            for (_, q) in queue.iter_mut() { if q.sender == old { q.sender = new_name.clone(); } }
+        }
+        Event::Ipc { from, payload } if from == "manager" && payload.starts_with("MAP_CHANGE|") => {
+            pending_auth.clear();
+            queue.clear();
+            hud_enabled.retain(|p| api.online.contains(p));
+        }
         Event::Leave { player } => {
-            hud_enabled.remove(&player);
+            cleanup_mod_session(&player, api.last_leave_cid, &mut hud_enabled, &mut pending_auth, &mut queue);
+            if let Some(cid) = api.last_leave_cid { api.cmd(&format!("spec_hud {} 0", cid)); api.set_vip_plus(cid, false); }
             if under_check.remove(&player) {
                 api.cmd(&format!("ban \"{}\" 10080 Выход при проверке на читы", player));
                 api.say(&format!("[Античит] Игрок {} вышел во время проверки и получил авто-бан на 7 дней!", player));
@@ -93,28 +133,15 @@ fn main() {
                 }
                 return;
             }
-            match cmd {
-                "!auth_admin" | "!staff" | "!ids" | "!hud" | "!check" | "!uncheck" | "!setrole" | "!kick" | "!ban" | "!unban" | "!mute" | "!freeze" | "!warn" => {
-                    let Some(acc) = api.authed_accounts.get(&player).cloned() else {
-                        api.whisper(&player, "[Mod] Сначала войдите в аккаунт через /login!");
-                        return;
-                    };
-                    if cmd == "!auth_admin" {
-                        if parts.get(1).map(|s| s.as_str()) == Some(MASTER_PASS) {
-                            api.db_set(&format!("role_acc:{}", acc), "owner");
-                            hud_enabled.insert(player.clone());
-                            if let Some(&cid) = api.player_cids.get(&player).or_else(|| api.cids.get(&player)) { api.cmd(&format!("spec_hud {} 1", cid)); api.set_vip_plus(cid, true); }
-                            audit_log(&player, &acc, "AUTH_OWNER", &acc, "Мастер-ключ");
-                            api.whisper(&player, &format!("[Mod] Аккаунту '{}' выданы права Owner и Spectator HUD!", acc));
-                        } else { api.whisper(&player, "[Mod] Неверный мастер-пароль."); }
-                        return;
-                    }
-                    seq += 1;
-                    let req = format!("m_{}", seq);
-                    queue.insert(req.clone(), QueuedCmd { sender: player.clone(), account: acc.clone(), cmd: cmd.to_string(), args: parts[1..].to_vec() });
-                    api.db_get(&req, &format!("role_acc:{}", acc));
-                }
-                _ => {}
+            if can_exec_mod_cmd(Role::Owner, cmd) {
+                let Some(acc) = api.authed_accounts.get(&player).cloned() else {
+                    api.whisper(&player, "[Mod] Сначала войдите в аккаунт через /login!");
+                    return;
+                };
+                seq += 1;
+                let req = format!("m_{}", seq);
+                queue.insert(req.clone(), QueuedCmd { sender: player.clone(), account: acc.clone(), cmd: cmd.to_string(), args: parts[1..].to_vec() });
+                api.db_get(&req, &format!("role_acc:{}", acc));
             }
         }
         Event::DbList { req_id, items } => {
@@ -135,8 +162,12 @@ fn main() {
                     }
                     return;
                 }
+                if !can_exec_mod_cmd(role, q.cmd.as_str()) {
+                    api.whisper(&q.sender, "[Mod] Недостаточно прав или вы не авторизованы.");
+                    return;
+                }
                 match q.cmd.as_str() {
-                    "!staff" if role >= Role::Helper => {
+                    "!staff" => {
                         seq += 1;
                         let lid = format!("st_{}", seq);
                         staff_req.insert(lid.clone(), q.sender.clone());
@@ -253,4 +284,49 @@ fn main() {
         }
         _ => {}
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mod_session_cleanup_on_leave_and_cid_reuse() {
+        let mut hud = HashSet::from(["Alice".to_string(), "Bob".to_string()]);
+        let mut p_auth = HashMap::from([(1u64, (2, "Alice".to_string(), "AccAlice".to_string())), (2u64, (3, "Bob".to_string(), "AccBob".to_string()))]);
+        let mut q = HashMap::from([("m_1".to_string(), QueuedCmd { sender: "Alice".into(), account: "AccAlice".into(), cmd: "!staff".into(), args: vec![] })]);
+
+        cleanup_mod_session("Alice", Some(2), &mut hud, &mut p_auth, &mut q);
+        assert!(!hud.contains("Alice") && hud.contains("Bob"));
+        assert!(!p_auth.contains_key(&1) && p_auth.contains_key(&2));
+        assert!(!q.contains_key("m_1"));
+    }
+
+    #[test]
+    fn test_mod_commands_role_matrix() {
+        let helper_cmds = ["!staff", "!ids", "!hud", "!warn", "!mute", "!kick"];
+        let mod_cmds = ["!check", "!uncheck", "!ban", "!unban", "!freeze"];
+        let owner_cmds = ["!setrole"];
+
+        for cmd in helper_cmds {
+            assert!(!can_exec_mod_cmd(Role::User, cmd), "User must not run {}", cmd);
+            assert!(can_exec_mod_cmd(Role::Helper, cmd), "Helper must run {}", cmd);
+            assert!(can_exec_mod_cmd(Role::Mod, cmd), "Mod must run {}", cmd);
+            assert!(can_exec_mod_cmd(Role::Owner, cmd), "Owner must run {}", cmd);
+        }
+        for cmd in mod_cmds {
+            assert!(!can_exec_mod_cmd(Role::User, cmd), "User must not run {}", cmd);
+            assert!(!can_exec_mod_cmd(Role::Helper, cmd), "Helper must not run {}", cmd);
+            assert!(can_exec_mod_cmd(Role::Mod, cmd), "Mod must run {}", cmd);
+            assert!(can_exec_mod_cmd(Role::Owner, cmd), "Owner must run {}", cmd);
+        }
+        for cmd in owner_cmds {
+            assert!(!can_exec_mod_cmd(Role::User, cmd));
+            assert!(!can_exec_mod_cmd(Role::Helper, cmd));
+            assert!(!can_exec_mod_cmd(Role::Mod, cmd));
+            assert!(can_exec_mod_cmd(Role::Owner, cmd));
+        }
+        // Бэкдор !auth_admin полностью запрещён для всех ролей
+        assert!(!can_exec_mod_cmd(Role::Owner, "!auth_admin"));
+    }
 }

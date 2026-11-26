@@ -1,7 +1,7 @@
 mod meta;
 
 use meta::{
-    PluginMetrics, SERVER_API_VERSION, StateRegistry, is_api_compatible, required_permission,
+    PluginMetrics, SERVER_API_VERSION, StateRegistry, can_execute_server_cmd, is_api_compatible,
     validate_permissions,
 };
 use std::collections::{HashMap, HashSet};
@@ -59,6 +59,7 @@ struct ManagedPlugin {
     track_pos: bool,
     is_admin: bool,
     reg_info: Option<String>,
+    manifest_declared: bool,
     permissions: HashSet<String>,
     metrics: PluginMetrics,
     child: Option<Child>,
@@ -93,9 +94,33 @@ fn log_plugin_err(pname: &str, msg: &str) {
     }
 }
 
+/// Удаляет переносы строк и управляющие символы перед отправкой команды в server.fifo.
+fn sanitize_fifo_line(cmd: &str) -> String {
+    cmd.chars().filter(|&c| c != '\n' && c != '\r' && c != '\0' && (!c.is_control() || c == '\t')).collect()
+}
+/// Экранирует поле IPC-протокола: убирает управляющие символы и кодирует '%' и '|'.
+fn escape_ipc_field(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_control() { continue; }
+        match c { '%' => out.push_str("%25"), '|' => out.push_str("%7C"), _ => out.push(c) }
+    }
+    out
+}
+fn is_valid_db_key(k: &str) -> bool {
+    !k.is_empty() && !k.contains('=') && !k.contains('|') && !k.chars().any(char::is_control)
+}
+fn sanitize_db_value(v: &str) -> String {
+    v.chars().filter(|&c| !c.is_control() || c == '\t').collect()
+}
+fn known_online_nicks() -> &'static Mutex<HashSet<String>> {
+    static NICKS: std::sync::OnceLock<Mutex<HashSet<String>>> = std::sync::OnceLock::new();
+    NICKS.get_or_init(|| Mutex::new(HashSet::new()))
+}
 fn send_fifo(cmd: &str) {
-    if let Ok(mut f) = OpenOptions::new().write(true).open(spath("server.fifo")) {
-        let _ = writeln!(f, "{}", cmd);
+    let clean = sanitize_fifo_line(cmd);
+    if !clean.trim().is_empty() && let Ok(mut f) = OpenOptions::new().write(true).open(spath("server.fifo")) {
+        let _ = writeln!(f, "{}", clean);
     }
 }
 
@@ -123,6 +148,7 @@ fn stop_plugin_clean(p: &mut ManagedPlugin, registry: &Arc<Mutex<StateRegistry>>
             send_fifo(&cmd);
         }
     }
+    if p.name == "super" { for c in 0..64 { for cmd in [format!("plugin_set_invincible {c} 0"), format!("plugin_set_endless_jump {c} 0"), format!("plugin_set_endless_hook {c} 0"), format!("set_phys {c} jetpack 0"), format!("set_phys {c} hammer_hit 1"), format!("set_phys {c} collision 1"), format!("set_phys {c} hook_hit 1"), format!("plugin_set_color {c} 0 0 0")] { send_fifo(&cmd); } } }
     for fc in cleanup_visuals(&p.name) {
         send_fifo(&fc);
     }
@@ -143,6 +169,52 @@ fn stop_plugin_clean(p: &mut ManagedPlugin, registry: &Arc<Mutex<StateRegistry>>
     p.child = None;
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DbOp { Read, Write, Delete }
+
+/// Разрешает ключ БД в изолированное пространство имён плагина `ns:<pname>:<key>`
+/// либо проверяет доступ к общим аккаунтным ключам (`acc_coins:`, `acc_nick:`, `role_acc:`).
+fn resolve_db_key(pname: &str, is_admin: bool, op: DbOp, raw_key: &str) -> Result<String, &'static str> {
+    if !is_valid_db_key(raw_key) { return Err("InvalidDbKey"); }
+    if raw_key.starts_with("ns:") || raw_key.starts_with("pstate:") {
+        return Err("NamespaceViolation: direct access to internal namespace is forbidden");
+    }
+    if raw_key.starts_with("role_acc:") || raw_key.starts_with("role:") {
+        let allowed = match op {
+            DbOp::Read => is_admin || pname == "plugin_city",
+            DbOp::Write | DbOp::Delete => is_admin,
+        };
+        return if allowed { Ok(raw_key.to_string()) } else { Err("PermissionDenied: role_acc requires admin plugin") };
+    }
+    if raw_key.starts_with("acc_coins:") || raw_key.starts_with("acc_nick:") {
+        return if op == DbOp::Delete { Err("ProtectedAccountKey") } else { Ok(raw_key.to_string()) };
+    }
+    Ok(format!("ns:{}:{}", pname, raw_key))
+}
+
+/// Разрешает префикс для PREFIX / DEL_PREFIX в пределах namespace плагина или разрешённых аккаунтных префиксов.
+fn resolve_db_prefix(pname: &str, is_admin: bool, op: DbOp, raw_pref: &str) -> Result<(String, usize), &'static str> {
+    if raw_pref.contains('=') || raw_pref.contains('|') || raw_pref.chars().any(char::is_control) {
+        return Err("InvalidDbPrefix");
+    }
+    if raw_pref.starts_with("ns:") || raw_pref.starts_with("pstate:") {
+        return Err("NamespaceViolation: direct prefix access to internal namespace is forbidden");
+    }
+    if raw_pref.starts_with("role_acc:") || raw_pref.starts_with("role:") {
+        return if op == DbOp::Read && is_admin { Ok((raw_pref.to_string(), raw_pref.len())) } else { Err("PermissionDenied: role_acc prefix restricted") };
+    }
+    if raw_pref.starts_with("acc_coins:") || raw_pref.starts_with("acc_nick:") {
+        return if op == DbOp::Read { Ok((raw_pref.to_string(), raw_pref.len())) } else { Err("ProtectedAccountPrefix") };
+    }
+    if op == DbOp::Delete && raw_pref.is_empty() {
+        return Err("EmptyDeletePrefix");
+    }
+    let ns_root = format!("ns:{}:", pname);
+    let full = format!("{}{}", ns_root, raw_pref);
+    let strip_len = ns_root.len();
+    Ok((full, strip_len))
+}
+
 fn load_db() -> HashMap<String, String> {
     let mut map = HashMap::new();
     if let Ok(content) = fs::read_to_string(spath("plugins_kv.db")) {
@@ -158,7 +230,7 @@ fn load_db() -> HashMap<String, String> {
 fn save_db(map: &HashMap<String, String>) {
     let mut out = String::new();
     for (k, v) in map {
-        out.push_str(&format!("{}={}\n", k, v));
+        if is_valid_db_key(k) { out.push_str(&format!("{}={}\n", k, sanitize_db_value(v))); }
     }
     let _ = fs::write(spath("plugins_kv.db"), out);
 }
@@ -227,13 +299,13 @@ fn parse_log_event(line: &str) -> String {
             weapon = rest[ws + 7..].split_whitespace().next().unwrap_or("0");
         }
         if !killer.is_empty() && !victim.is_empty() {
-            return format!("KILL|{}|{}|{}", killer, victim, weapon);
+            return format!("KILL|{}|{}|{}", escape_ipc_field(killer), escape_ipc_field(victim), escape_ipc_field(weapon));
         }
     }
     if let Some(pos) = line.find("I plugin: bestclient cid=") {
         let rest = line[pos + 25..].trim();
         if let Some((cid, ver)) = rest.split_once(" ver=") {
-            return format!("BESTCLIENT|{}|{}", cid.trim(), ver.trim());
+            return format!("BESTCLIENT|{}|{}", cid.trim(), escape_ipc_field(ver.trim()));
         }
     }
     if let Some(pos) = line.find("I auth:") {
@@ -241,7 +313,7 @@ fn parse_log_event(line: &str) -> String {
         if let Some((cid, tail)) = rest.split_once(':')
             && let Some((nick, acc)) = tail.rsplit_once(':')
         {
-            return format!("AUTH|{}|{}|{}", cid.trim(), nick.trim(), acc.trim());
+            return format!("AUTH|{}|{}|{}", cid.trim(), escape_ipc_field(nick.trim()), escape_ipc_field(acc.trim()));
         }
     }
     if let Some(pos) = line.find("I team:") {
@@ -249,25 +321,33 @@ fn parse_log_event(line: &str) -> String {
         if let Some((cid_s, tail)) = rest.split_once(':')
             && let Some((nick, team_s)) = tail.rsplit_once(':')
         {
-            return format!("IPC|manager|TEAM|{}|{}|{}", cid_s.trim(), team_s.trim(), nick.trim());
+            return format!("IPC|manager|TEAM|{}|{}|{}", cid_s.trim(), team_s.trim(), escape_ipc_field(nick.trim()));
         }
     }
     if let Some(pos) = line.find("I chat:") {
         let rest = line[pos + 7..].trim();
         if let Some(after_cid) = rest.split_once(':')
             && let Some((team_str, after_team)) = after_cid.1.split_once(':')
-            && let Some((nick, msg)) = after_team.split_once(": ")
         {
-            return format!("CHAT|{}|{}|{}", team_str.trim(), nick.trim(), msg.trim());
+            let matched = known_online_nicks().lock().ok().and_then(|ns| {
+                ns.iter().filter_map(|n| after_team.strip_prefix(&format!("{}: ", n)).map(|m| (n.clone(), m.to_string()))).max_by_key(|(n, _)| n.len())
+            });
+            if let Some((nick, msg)) = matched {
+                return format!("CHAT|{}|{}|{}", team_str.trim(), escape_ipc_field(&nick), escape_ipc_field(msg.trim()));
+            }
+            if let Some((nick, msg)) = after_team.split_once(": ") {
+                return format!("CHAT|{}|{}|{}", team_str.trim(), escape_ipc_field(nick.trim()), escape_ipc_field(msg.trim()));
+            }
         }
     }
+    if let Some(pos) = line.find("maps/") { let r = &line[pos+5..]; if let Some(e) = r.find(".map sha256 is ") { if let Some(m) = sanitize_map_name_arg(&r[..e]) { return format!("IPC|manager|MAP_CHANGE|{}", m); } } }
     if let Some(pos) = line.find("changed name to '") {
         let before = line[..pos].trim_end();
         let after = &line[pos + 17..];
         if let Some(b2) = before.strip_suffix('\'')
             && let (Some(f), Some(e)) = (b2.find('\''), after.rfind('\''))
         {
-            return format!("RENAME|{}|{}", &b2[f + 1..], &after[..e]);
+            return { let (o, n) = (&b2[f + 1..], &after[..e]); if let Ok(mut g) = known_online_nicks().lock() { g.remove(o); g.insert(n.to_string()); } format!("RENAME|{}|{}", escape_ipc_field(o), escape_ipc_field(n)) };
         }
     }
     if let Some(pos) = line.find("entered and joined the game") {
@@ -275,7 +355,7 @@ fn parse_log_event(line: &str) -> String {
         if let Some(s) = before.rfind('\'') {
             let sub = &before[..s];
             if let Some(f) = sub.find('\'') {
-                return format!("JOIN|{}", &sub[f + 1..]);
+                return { let n = &sub[f + 1..]; if let Ok(mut g) = known_online_nicks().lock() { g.insert(n.to_string()); } format!("JOIN|{}", escape_ipc_field(n)) };
             }
         }
     }
@@ -284,7 +364,7 @@ fn parse_log_event(line: &str) -> String {
         if let Some(s) = before.rfind('\'') {
             let sub = &before[..s];
             if let Some(f) = sub.find('\'') {
-                return format!("LEAVE|{}", &sub[f + 1..]);
+                return { let n = &sub[f + 1..]; if let Ok(mut g) = known_online_nicks().lock() { g.remove(n); } format!("LEAVE|{}", escape_ipc_field(n)) };
             }
         }
     }
@@ -401,6 +481,7 @@ fn spawn_plugin(
                         if let Ok(mut list) = plugins_ref.lock()
                             && let Some(pl) = list.iter_mut().find(|x| x.name == pname)
                         {
+                            pl.manifest_declared = true;
                             pl.permissions = parsed.into_iter().collect();
                         }
                         continue;
@@ -508,6 +589,7 @@ fn spawn_plugin(
                         }
                     }
                     if let Some(rest) = cmd.strip_prefix("@DB ") {
+                        let is_adm = plugins_ref.lock().ok().and_then(|l| l.iter().find(|x| x.name == pname).map(|pl| pl.is_admin)).unwrap_or(false);
                         let parts: Vec<&str> = rest.split('|').collect();
                         match parts.first().copied() {
                             Some("ADD_ACC") => {
@@ -558,94 +640,72 @@ fn spawn_plugin(
                             }
                             Some("ADD") => {
                                 if let (Some(k), Some(d)) = (parts.get(1), parts.get(2))
-                                    && let (Ok(delta), Ok(mut map)) = (d.parse::<i64>(), db.lock())
+                                    && let (Ok(fk), Ok(delta), Ok(mut map)) = (resolve_db_key(&pname, is_adm, DbOp::Write, k), d.parse::<i64>(), db.lock())
                                 {
-                                    let cur: i64 =
-                                        map.get(*k).and_then(|v| v.parse().ok()).unwrap_or(0);
-                                    map.insert(k.to_string(), (cur + delta).max(0).to_string());
+                                    let cur: i64 = map.get(&fk).and_then(|v| v.parse().ok()).unwrap_or(0);
+                                    map.insert(fk, (cur + delta).max(0).to_string());
                                     save_db(&map);
                                 }
                             }
                             Some("SET") => {
                                 if let (Some(k), Some(v)) = (parts.get(1), parts.get(2)) {
-                                    if let Ok(mut m) = db.lock() {
-                                        m.insert(k.to_string(), v.to_string());
-                                        save_db(&m);
-                                    }
-                                    if let Some(acc) = k.strip_prefix("role_acc:") {
-                                        dispatch_event(
-                                            &plugins_ref,
-                                            &format!("ROLE|{}|{}", acc, v),
-                                            &mut 0,
-                                        );
+                                    match resolve_db_key(&pname, is_adm, DbOp::Write, k) {
+                                        Ok(fk) => {
+                                            if let Ok(mut m) = db.lock() { m.insert(fk.clone(), sanitize_db_value(v)); save_db(&m); }
+                                            if let Some(acc) = fk.strip_prefix("role_acc:") { dispatch_event(&plugins_ref, &format!("ROLE|{}|{}", acc, sanitize_db_value(v)), &mut 0); }
+                                        }
+                                        Err(e) => log_plugin_err(&pname, &format!("DbAccessDenied SET {}: {}", k, e)),
                                     }
                                 }
                             }
                             Some("GET") => {
                                 if let (Some(req), Some(k)) = (parts.get(1), parts.get(2)) {
-                                    let val = db
-                                        .lock()
-                                        .ok()
-                                        .and_then(|m| m.get(*k).cloned())
-                                        .unwrap_or_default();
-                                    if let Ok(mut list) = plugins_ref.lock()
-                                        && let Some(pl) = list.iter_mut().find(|x| x.name == pname)
-                                        && let Some(ref mut sin) = pl.stdin
-                                    {
+                                    let val = match resolve_db_key(&pname, is_adm, DbOp::Read, k) {
+                                        Ok(fk) => db.lock().ok().and_then(|m| m.get(&fk).cloned()).unwrap_or_default(),
+                                        Err(e) => { log_plugin_err(&pname, &format!("DbAccessDenied GET {}: {}", k, e)); String::new() }
+                                    };
+                                    if let Ok(mut list) = plugins_ref.lock() && let Some(pl) = list.iter_mut().find(|x| x.name == pname) && let Some(ref mut sin) = pl.stdin {
                                         let _ = writeln!(sin, "DB_VAL|{}|{}", req, val);
                                     }
                                 }
                             }
                             Some("DEL") => {
-                                if let Some(k) = parts.get(1)
-                                    && !k.starts_with("acc_coins:")
-                                    && !k.starts_with("acc_nick:")
-                                {
-                                    if let Ok(mut m) = db.lock()
-                                        && m.remove(*k).is_some()
-                                    {
-                                        save_db(&m);
-                                    }
-                                    if let Some(acc) = k.strip_prefix("role_acc:") {
-                                        dispatch_event(
-                                            &plugins_ref,
-                                            &format!("ROLE|{}|", acc),
-                                            &mut 0,
-                                        );
+                                if let Some(k) = parts.get(1) {
+                                    match resolve_db_key(&pname, is_adm, DbOp::Delete, k) {
+                                        Ok(fk) => {
+                                            if let Ok(mut m) = db.lock() && m.remove(&fk).is_some() { save_db(&m); }
+                                            if let Some(acc) = fk.strip_prefix("role_acc:") { dispatch_event(&plugins_ref, &format!("ROLE|{}|", acc), &mut 0); }
+                                        }
+                                        Err(e) => log_plugin_err(&pname, &format!("DbAccessDenied DEL {}: {}", k, e)),
                                     }
                                 }
                             }
                             Some("DEL_PREFIX") => {
-                                if let Some(pref) = parts.get(1)
-                                    && !pref.is_empty()
-                                    && !pref.starts_with("acc_")
-                                    && !pref.starts_with("role_acc:")
-                                    && let Ok(mut m) = db.lock()
-                                {
-                                    let before = m.len();
-                                    m.retain(|k, _| !k.starts_with(*pref));
-                                    if m.len() != before {
-                                        save_db(&m);
+                                if let Some(pref) = parts.get(1) {
+                                    match resolve_db_prefix(&pname, is_adm, DbOp::Delete, pref) {
+                                        Ok((fp, _)) => {
+                                            if let Ok(mut m) = db.lock() { let b = m.len(); m.retain(|k, _| !k.starts_with(&fp)); if m.len() != b { save_db(&m); } }
+                                        }
+                                        Err(e) => log_plugin_err(&pname, &format!("DbAccessDenied DEL_PREFIX {}: {}", pref, e)),
                                     }
                                 }
                             }
                             Some("PREFIX") => {
                                 if let (Some(req), Some(pref)) = (parts.get(1), parts.get(2)) {
                                     let mut pairs = Vec::new();
-                                    if let Ok(m) = db.lock() {
-                                        for (k, v) in m.iter() {
-                                            if let Some(short_k) = k.strip_prefix(*pref) {
-                                                pairs.push(format!("{}={}", short_k, v));
+                                    match resolve_db_prefix(&pname, is_adm, DbOp::Read, pref) {
+                                        Ok((fp, sl)) => {
+                                            if let Ok(m) = db.lock() {
+                                                for (k, v) in m.iter() {
+                                                    if k.starts_with(&fp) && k.len() >= sl { pairs.push(format!("{}={}", &k[sl..], v)); }
+                                                }
                                             }
                                         }
+                                        Err(e) => log_plugin_err(&pname, &format!("DbAccessDenied PREFIX {}: {}", pref, e)),
                                     }
                                     pairs.sort();
-                                    if let Ok(mut list) = plugins_ref.lock()
-                                        && let Some(pl) = list.iter_mut().find(|x| x.name == pname)
-                                        && let Some(ref mut sin) = pl.stdin
-                                    {
-                                        let _ =
-                                            writeln!(sin, "DB_LIST|{}|{}", req, pairs.join(";"));
+                                    if let Ok(mut list) = plugins_ref.lock() && let Some(pl) = list.iter_mut().find(|x| x.name == pname) && let Some(ref mut sin) = pl.stdin {
+                                        let _ = writeln!(sin, "DB_LIST|{}|{}", req, pairs.join(";"));
                                     }
                                 }
                             }
@@ -771,35 +831,29 @@ fn spawn_plugin(
                         }
                     } else {
                         let head = cmd.split_whitespace().next().unwrap_or("");
-                        if matches!(head, "change_map" | "set_gamemode" | "set_fng_weapons" | "set_laser_freeze" | "set_freeze_autokill" | "set_hammer_team_unfreeze") {
-                            let is_adm = plugins_ref.lock().ok().and_then(|l| l.iter().find(|x| x.name == pname).map(|pl| pl.is_admin)).unwrap_or(false);
-                            if !is_adm {
-                                log_plugin_err(&pname, &format!("AdminRequired: {} blocked for non-admin plugin", cmd));
-                                continue;
-                            }
+                        let perm_res = plugins_ref
+                            .lock()
+                            .ok()
+                            .and_then(|l| {
+                                l.iter().find(|x| x.name == pname).map(|pl| {
+                                    can_execute_server_cmd(
+                                        pl.is_admin,
+                                        pl.manifest_declared,
+                                        &pl.permissions,
+                                        cmd,
+                                    )
+                                })
+                            })
+                            .unwrap_or_else(|| Err("PluginNotFound".to_string()));
+                        if let Err(err_msg) = perm_res {
+                            log_plugin_err(&pname, &err_msg);
+                            continue;
                         }
                         // Уведомляем все плагины о смене карты для сброса временных режимов
                         if head == "change_map" {
-                            let map_arg = cmd.strip_prefix("change_map").unwrap_or("").trim().trim_matches('"');
-                            if let Ok(mut list) = plugins_ref.lock() { for pl in list.iter_mut() { if pl.enabled && let Some(ref mut sin) = pl.stdin { let _ = writeln!(sin, "IPC|manager|MAP_CHANGE|{}", map_arg); } } }
-                        }
-                        if let Some(need) = required_permission(cmd) {
-                            let ok = plugins_ref
-                                .lock()
-                                .ok()
-                                .and_then(|l| {
-                                    l.iter()
-                                        .find(|x| x.name == pname)
-                                        .map(|pl| pl.permissions.contains(need))
-                                })
-                                .unwrap_or(false);
-                            if !ok {
-                                log_plugin_err(
-                                    &pname,
-                                    &format!("PermissionDenied: '{}' requires '{}'", cmd, need),
-                                );
-                                continue;
-                            }
+                            let Some(map_arg) = parse_change_map_arg(cmd) else { log_plugin_err(&pname, &format!("InvalidMapArg: {}", cmd)); continue; };
+                            if let Ok(mut g) = last_ipc_map_change().lock() { *g = Some((map_arg.clone(), Instant::now())); }
+                            if let Ok(mut list) = plugins_ref.lock() { dispatch_map_change_to_plugins(&mut list, &map_arg); }
                         }
                         if (cmd.starts_with("spawn_fx ") || cmd.starts_with("spawn_laser"))
                             && let Ok(mut list) = plugins_ref.lock()
@@ -991,6 +1045,7 @@ fn main() {
                                 track_pos: false,
                                 is_admin: false,
                                 reg_info: None,
+                                manifest_declared: false,
                                 permissions: HashSet::new(),
                                 metrics: PluginMetrics::default(),
                                 child: None,
@@ -1052,6 +1107,7 @@ fn main() {
                         pending_cid = Some(cid);
                     }
                     let mut ev = parse_log_event(line);
+                    if let Some(m) = ev.strip_prefix("IPC|manager|MAP_CHANGE|") { if last_ipc_map_change().lock().ok().and_then(|mut g| if g.as_ref().is_some_and(|(lm, ts)| lm == m && ts.elapsed() < Duration::from_secs(2)) { *g = None; Some(true) } else { Some(false) }).unwrap_or(false) { continue; } }
                     if !ev.is_empty() {
                         if let Some(rest) = ev.strip_prefix("AUTH|") {
                             let sp: Vec<&str> = rest.splitn(3, '|').collect();
@@ -1547,4 +1603,84 @@ fn cleanup_visuals(pname: &str) -> Vec<String> {
         }
     });
     out
+}
+
+fn last_ipc_map_change() -> &'static Mutex<Option<(String, Instant)>> {
+    static LAST: std::sync::OnceLock<Mutex<Option<(String, Instant)>>> = std::sync::OnceLock::new();
+    LAST.get_or_init( || Mutex::new(None))
+}
+fn sanitize_map_name_arg(raw: &str) -> Option<String> {
+    let clean: String = raw.chars().filter(|&c| !c.is_control() && c != '"' && c != ';').collect();
+    let t = clean.trim();
+    if t.is_empty() { None } else { Some(t.to_string()) }
+}
+fn parse_change_map_arg(cmd: &str) -> Option<String> {
+    let rest = cmd.strip_prefix("change_map")?;
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) && !rest.starts_with('"') { return None; }
+    sanitize_map_name_arg(rest)
+}
+fn dispatch_map_change_to_plugins(list: &mut [ManagedPlugin], map_arg: &str) {
+    for pl in list.iter_mut() {
+        if pl.enabled && let Some(ref mut sin) = pl.stdin {
+            let _ = writeln!(sin, "IPC|manager|MAP_CHANGE|{}", map_arg);
+            let _ = sin.flush();
+        }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_database_namespace_isolation_and_accounts() {
+        let k_a = resolve_db_key("plugin_a", false, DbOp::Write, "secret").unwrap();
+        let k_b = resolve_db_key("plugin_b", false, DbOp::Write, "secret").unwrap();
+        assert_eq!(k_a, "ns:plugin_a:secret");
+        assert_eq!(k_b, "ns:plugin_b:secret");
+        assert!(resolve_db_key("plugin_a", false, DbOp::Read, "ns:plugin_b:secret").is_err());
+        assert!(resolve_db_key("plugin_a", false, DbOp::Delete, "ns:plugin_b:secret").is_err());
+        assert!(resolve_db_key("plugin_a", false, DbOp::Read, "pstate:plugin_b:secret").is_err());
+        assert!(resolve_db_prefix("plugin_a", false, DbOp::Read, "ns:plugin_b:").is_err());
+        assert!(resolve_db_prefix("plugin_a", false, DbOp::Delete, "pstate:plugin_b:").is_err());
+        let (pref_r, strip_r) = resolve_db_prefix("plugin_a", false, DbOp::Read, "cfg:").unwrap();
+        assert_eq!((pref_r.as_str(), strip_r), ("ns:plugin_a:cfg:", "ns:plugin_a:".len()));
+        assert_eq!(resolve_db_prefix("plugin_a", false, DbOp::Delete, "cfg:").unwrap().0, "ns:plugin_a:cfg:");
+        assert!(resolve_db_key("plugin_a", false, DbOp::Write, "role_acc:user1").is_err());
+        assert!(resolve_db_key("plugin_a", false, DbOp::Delete, "role_acc:user1").is_err());
+        assert_eq!(resolve_db_key("plugin_mod", true, DbOp::Write, "role_acc:user1").unwrap(), "role_acc:user1");
+        assert_eq!(resolve_db_key("plugin_city", false, DbOp::Read, "role_acc:user1").unwrap(), "role_acc:user1");
+        assert_eq!(resolve_db_key("plugin_city", false, DbOp::Write, "acc_coins:user1").unwrap(), "acc_coins:user1");
+        assert_eq!(resolve_db_key("plugin_city", false, DbOp::Read, "acc_nick:user1").unwrap(), "acc_nick:user1");
+        assert!(resolve_db_key("plugin_city", false, DbOp::Delete, "acc_coins:user1").is_err());
+        assert!(resolve_db_prefix("plugin_city", false, DbOp::Delete, "acc_coins:").is_err());
+    }
+
+    #[test]
+    fn test_ipc_escaping_and_injection_defense() {
+        assert_eq!(escape_ipc_field("Player1"), "Player1");
+        assert_eq!(parse_log_event("I chat: 0:-1:Player1: hello world"), "CHAT|-1|Player1|hello world");
+        let chat_ev = parse_log_event("I chat: 0:-1:Evil|Admin: msg|part\n\x1b[31m");
+        assert_eq!(chat_ev, "CHAT|-1|Evil%7CAdmin|msg%7Cpart[31m");
+        assert_eq!(chat_ev.split('|').count(), 4);
+        assert_eq!(parse_log_event("'Alice: Bob' entered and joined the game"), "JOIN|Alice: Bob");
+        assert_eq!(parse_log_event("I chat: 1:-1:Alice: Bob: !ban 0"), "CHAT|-1|Alice: Bob|!ban 0");
+        assert_eq!(sanitize_fifo_line("say \"hi\"\nban 0 60\r"), "say \"hi\"ban 0 60");
+        assert!(is_valid_db_key("role_acc:Tinker1337"));
+        assert!(!is_valid_db_key("bad=key"));
+        assert!(!is_valid_db_key("bad|key"));
+        assert!(!is_valid_db_key("bad\nkey"));
+    }
+
+    #[test]
+    fn test_change_map_and_log_parser() {
+        // Валидные имена, пробелы, пустое имя, кавычки и переносы строк
+        assert_eq!(parse_change_map_arg(r#"change_map "ChillBlock5""#).as_deref(), Some("ChillBlock5"));
+        assert_eq!(parse_change_map_arg("change_map"), None);
+        assert_eq!(parse_change_map_arg("change_map   "), None);
+        assert_eq!(parse_change_map_arg(r#"change_map """#), None);
+        assert_eq!(parse_change_map_arg("change_map \"ctf5\n\n;sv_gravity 0\r\"").as_deref(), Some("ctf5sv_gravity 0"));
+        // Обычная и повторная смена карты по логу ядра
+        assert_eq!(parse_log_event("I server: maps/A.map sha256 is 111"), "IPC|manager|MAP_CHANGE|A");
+        assert_eq!(parse_log_event("I server: maps/B.map sha256 is 222"), "IPC|manager|MAP_CHANGE|B");
+        assert_eq!(parse_log_event("I server: maps/A.map sha256 is 111"), "IPC|manager|MAP_CHANGE|A");
+    }
 }

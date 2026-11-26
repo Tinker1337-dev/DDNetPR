@@ -51,8 +51,21 @@ fn apply_fng_loadout(api: &ServerApi, cid: i32) {
     api.give_weapon(cid, 4);
 }
 
+fn on_player_leave(player: &str, scores: &mut HashMap<String, i32>, teams: &mut HashMap<String, i32>, cids_map: &mut HashMap<String, i32>) {
+    teams.remove(player);
+    scores.remove(player);
+    cids_map.remove(player);
+}
+
+fn on_player_rename(old: &str, new: &str, scores: &mut HashMap<String, i32>, teams: &mut HashMap<String, i32>, cids_map: &mut HashMap<String, i32>) {
+    if old == new { return; }
+    if let Some(sc) = scores.remove(old) { scores.insert(new.to_string(), sc); }
+    if let Some(tm) = teams.remove(old) { teams.insert(new.to_string(), tm); }
+    if let Some(cid) = cids_map.remove(old) { cids_map.insert(new.to_string(), cid); }
+}
+
 fn reset_round(api: &ServerApi, mode: Mode, scores: &mut HashMap<String, i32>, teams: &mut HashMap<String, i32>, cids_map: &mut HashMap<String, i32>, red: &mut i32, blue: &mut i32) {
-    scores.clear(); teams.clear(); *red = 0; *blue = 0;
+    scores.clear(); teams.clear(); cids_map.clear(); *red = 0; *blue = 0;
     api.set_gamemode(mode.code());
     api.set_team_score(0, 0);
     match mode {
@@ -99,7 +112,8 @@ ddnet_sdk::plugin! {
                 cids_map.insert(player.clone(), cid);
                 if team >= 0 { teams.insert(player, team); } else { teams.remove(&player); }
             }
-            Event::Leave { player } => { teams.remove(&player); }
+            Event::Rename { old, new_name, .. } => { on_player_rename(&old, &new_name, &mut scores, &mut teams, &mut cids_map); }
+            Event::Leave { player } => { on_player_leave(&player, &mut scores, &mut teams, &mut cids_map); }
             Event::Kill { killer, victim, weapon } if mode != Mode::Race && !killer.is_empty() && killer != victim => {
                 let kt = *teams.get(&killer).unwrap_or(&-1);
                 let vt = *teams.get(&victim).unwrap_or(&-1);
@@ -150,5 +164,35 @@ ddnet_sdk::plugin! {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_gamemode_join_rename_leave_and_map_change_cleanup() {
+        let mut api = ServerApi::new();
+        let (mut scores, mut teams, mut cids_map) = (HashMap::new(), HashMap::new(), HashMap::new());
+        let (mut red, mut blue) = (3, 2);
+
+        scores.insert("Alice".into(), 15);
+        teams.insert("Alice".into(), 0);
+        cids_map.insert("Alice".into(), 1);
+
+        on_player_rename("Alice", "Alice2", &mut scores, &mut teams, &mut cids_map);
+        assert!(!scores.contains_key("Alice"));
+        assert_eq!(scores.get("Alice2"), Some(&15));
+        assert_eq!(cids_map.get("Alice2"), Some(&1));
+
+        on_player_leave("Alice2", &mut scores, &mut teams, &mut cids_map);
+        assert!(scores.is_empty() && teams.is_empty() && cids_map.is_empty());
+
+        scores.insert("Bob".into(), 10);
+        cids_map.insert("Bob".into(), 1);
+        reset_round(&api, Mode::Block, &mut scores, &mut teams, &mut cids_map, &mut red, &mut blue);
+        assert!(scores.is_empty() && teams.is_empty() && cids_map.is_empty());
+        assert_eq!((red, blue), (0, 0));
     }
 }

@@ -8,7 +8,7 @@ curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && sourc
 
 ## 2. Сборка C++ ядра DDNetPR
 ```bash
-git clone --recursive ['https://github.com', 'vipmasuavip-ui', 'DDNetPR']/DDNetPP/DDNetPP.git DDNetPP
+git clone --recursive https://github.com/DDNetPP/DDNetPP.git DDNetPP
 cd DDNetPP && git checkout 4e458fa81 && git submodule update --init --recursive && git apply ../core/ddnetpr_core_v11.7_lts.patch
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCLIENT=OFF -DSERVER=ON
 cmake --build build -j\$(nproc)

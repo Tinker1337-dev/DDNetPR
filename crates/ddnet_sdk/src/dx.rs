@@ -15,7 +15,7 @@ impl PlayerId {
     /// assert!(!PlayerId(-1).is_valid());
     /// ```
     pub fn is_valid(self) -> bool {
-        self.0 >= 0
+        (0..MAX_CLIENTS).contains(&self.0)
     }
 }
 
@@ -184,6 +184,62 @@ impl fmt::Display for SdkError {
         }
     }
 }
+/// Максимальное число клиентских слотов в C++-ядре DDNet.
+pub const MAX_CLIENTS: i32 = 64;
+/// Количество слотов оружия в ядре (`0..=5`).
+pub const MAX_WEAPONS: i32 = 6;
+/// Количество слотов пользовательского HUD (`0..=4`).
+pub const MAX_HUD_SLOTS: u8 = 5;
+/// Максимальное число визуальных пикапов на плагин (`0..128`).
+pub const MAX_VISUAL_PICKUPS: i32 = 128;
+/// Максимальное число визуальных лазеров на плагин (`0..128`).
+pub const MAX_VISUAL_LASERS: i32 = 128;
+/// Максимальное число визуальных ти в ядре (`0..64`).
+pub const MAX_VISUAL_TEES: i32 = 64;
+/// Максимальное число векторных текстов в ядре (`0..32`).
+pub const MAX_VISUAL_TEXTS: i32 = 32;
+/// Максимальная длительность заморозки в секундах (защита от переполнения тиков).
+pub const MAX_FREEZE_SECS: i32 = 3600;
+/// Максимальный идентификатор игрового режима (`0..=3`).
+pub const MAX_GAMEMODE: i32 = 3;
+/// Предельная координата карты в пикселях (~1024 тайла).
+pub const MAX_COORD: f32 = 32768.0;
+/// Предельная проекция скорости/импульса.
+pub const MAX_SPEED: f32 = 500.0;
+/// Предельное абсолютное значение очков.
+pub const MAX_SCORE: i32 = 1_000_000;
+
+pub(crate) fn validate_cid(cid: i32) -> Result<(), SdkError> {
+    if (0..MAX_CLIENTS).contains(&cid) { Ok(()) } else { Err(SdkError::InvalidCid(PlayerId(cid))) }
+}
+pub(crate) fn validate_sound_cid(cid: i32) -> Result<(), SdkError> {
+    if cid == -1 || (0..MAX_CLIENTS).contains(&cid) { Ok(()) } else { Err(SdkError::InvalidCid(PlayerId(cid))) }
+}
+pub(crate) fn validate_weapon(w: i32) -> Result<(), SdkError> {
+    if (0..MAX_WEAPONS).contains(&w) { Ok(()) } else { Err(SdkError::InvalidArg { name: "weapon", reason: "weapon must be in 0..=5" }) }
+}
+pub(crate) fn validate_ammo(ammo: i32) -> Result<(), SdkError> {
+    if (-1..=9999).contains(&ammo) { Ok(()) } else { Err(SdkError::InvalidArg { name: "ammo", reason: "ammo must be -1 (remove) or 0..=9999" }) }
+}
+pub(crate) fn validate_visual_id(id: i32, limit: i32, name: &'static str) -> Result<(), SdkError> {
+    if (0..limit).contains(&id) { Ok(()) } else { Err(SdkError::InvalidArg { name, reason: "visual id out of pool range" }) }
+}
+pub(crate) fn validate_coords(x: f32, y: f32) -> Result<(), SdkError> {
+    if x.is_finite() && y.is_finite() && x.abs() <= MAX_COORD && y.abs() <= MAX_COORD { Ok(()) } else { Err(SdkError::OutOfBounds { x: x as i32, y: y as i32 }) }
+}
+pub(crate) fn validate_speed(vx: f32, vy: f32) -> Result<(), SdkError> {
+    if vx.is_finite() && vy.is_finite() && vx.abs() <= MAX_SPEED && vy.abs() <= MAX_SPEED { Ok(()) } else { Err(SdkError::InvalidArg { name: "vel", reason: "velocity components must be finite and within +-500" }) }
+}
+pub(crate) fn validate_freeze_secs(secs: i32) -> Result<(), SdkError> {
+    if (0..=MAX_FREEZE_SECS).contains(&secs) { Ok(()) } else { Err(SdkError::InvalidArg { name: "freeze_secs", reason: "freeze duration must be in 0..=3600" }) }
+}
+pub(crate) fn validate_gamemode(mode: i32) -> Result<(), SdkError> {
+    if (0..=MAX_GAMEMODE).contains(&mode) { Ok(()) } else { Err(SdkError::InvalidArg { name: "gamemode", reason: "gamemode must be in 0..=3" }) }
+}
+pub(crate) fn validate_score(score: i32) -> Result<(), SdkError> {
+    if (-MAX_SCORE..=MAX_SCORE).contains(&score) { Ok(()) } else { Err(SdkError::InvalidArg { name: "score", reason: "score must be within -1_000_000..=1_000_000" }) }
+}
+
 impl std::error::Error for SdkError {}
 
 /// Удобные реэкспорты для плагинов DDNet++ v10.0+.

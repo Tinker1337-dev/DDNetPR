@@ -1,7 +1,16 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 pub const SERVER_API_VERSION: &str = "11.0.0";
-pub const KNOWN_PERMISSIONS: &[&str] = &["tile_edit", "force_input", "noclip", "damage"];
+/// Список поддерживаемых capability-разрешений в манифесте плагина.
+pub const KNOWN_PERMISSIONS: &[&str] = &[
+    "tile_edit",
+    "force_input",
+    "noclip",
+    "damage",
+    "moderation",
+    "player_control",
+    "world_mode",
+];
 
 pub fn is_api_compatible(ver: &str) -> bool {
     let mut parts = ver.trim().split('.');
@@ -17,15 +26,67 @@ pub fn validate_permissions(perms: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-pub fn required_permission(cmd: &str) -> Option<&'static str> {
+/// Возвращает capability-разрешение, необходимое для исполнения серверной команды.
+pub fn required_permission(cmd: &str) -> Option<&str> {
     let head = cmd.split_whitespace().next().unwrap_or("");
     match head {
-        "set_tile" | "fill_tiles" | "restore_tiles" => Some("tile_edit"),
+        "set_tile" | "fill_tiles" | "restore_tiles" | "bc_set_tile" => Some("tile_edit"),
         "force_input" | "clear_force_input" => Some("force_input"),
         "set_noclip" => Some("noclip"),
         "deal_damage" | "heal" => Some("damage"),
+        "kick" | "ban" | "unban" | "muteid" | "spec_hud" | "mod_check" => Some("moderation"),
+        "plugin_set_invincible"
+        | "plugin_set_endless_jump"
+        | "plugin_set_endless_hook"
+        | "plugin_set_phys"
+        | "plugin_set_pos"
+        | "plugin_set_vel"
+        | "plugin_set_freeze"
+        | "plugin_set_vip_plus" => Some("player_control"),
+        "change_map"
+        | "set_gamemode"
+        | "set_fng_weapons"
+        | "set_laser_freeze"
+        | "set_freeze_autokill"
+        | "set_hammer_team_unfreeze" => Some("world_mode"),
         _ => None,
     }
+}
+
+/// Проверяет право плагина на отправку серверной команды в FIFO с учётом статуса админ-плагина и манифеста.
+pub fn can_execute_server_cmd(
+    is_admin: bool,
+    manifest_declared: bool,
+    permissions: &HashSet<String>,
+    cmd: &str,
+) -> Result<(), String> {
+    let head = cmd.split_whitespace().next().unwrap_or("");
+    if matches!(
+        head,
+        "change_map"
+            | "set_gamemode"
+            | "set_fng_weapons"
+            | "set_laser_freeze"
+            | "set_freeze_autokill"
+            | "set_hammer_team_unfreeze"
+    ) && !is_admin
+    {
+        return Err(format!("AdminRequired: {} blocked for non-admin plugin", cmd));
+    }
+    if let Some(need) = required_permission(cmd) {
+        if manifest_declared {
+            if !permissions.contains(need) {
+                return Err(format!("PermissionDenied: '{}' requires '{}'", cmd, need));
+            }
+        } else if matches!(need, "moderation" | "player_control" | "world_mode") {
+            if !is_admin {
+                return Err(format!("AdminRequired: '{}' requires admin plugin or manifest '{}'", cmd, need));
+            }
+        } else if !permissions.contains(need) {
+            return Err(format!("PermissionDenied: '{}' requires '{}'", cmd, need));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Default)]
@@ -285,5 +346,31 @@ impl PluginMetrics {
             "{}:tick_avg={}us,p99={}us,fx={}/s,ipc={}/s,sched={}",
             name, avg, p99, self.last_fx_sec, self.last_ipc_sec, self.scheduled_count
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_manifest_and_admin_command_permissions() {
+        let mut perms = HashSet::new();
+        assert!(can_execute_server_cmd(false, false, &perms, "kick 1").is_err());
+        assert!(can_execute_server_cmd(true, false, &perms, "kick 1").is_ok());
+
+        // Если манифест объявлен явно, требуемое разрешение проверяется строго
+        assert!(can_execute_server_cmd(true, true, &perms, "kick 1").is_err());
+        perms.insert("moderation".to_string());
+        assert!(can_execute_server_cmd(true, true, &perms, "kick 1").is_ok());
+        assert!(can_execute_server_cmd(true, true, &perms, "plugin_set_pos 1 100 100").is_err());
+
+        perms.insert("player_control".to_string());
+        assert!(can_execute_server_cmd(true, true, &perms, "plugin_set_pos 1 100 100").is_ok());
+
+        // Глобальные команды режима запрещены не-админ плагину даже при наличии world_mode
+        perms.insert("world_mode".to_string());
+        assert!(can_execute_server_cmd(false, true, &perms, "change_map dm1").is_err());
+        assert!(can_execute_server_cmd(true, true, &perms, "change_map dm1").is_ok());
     }
 }

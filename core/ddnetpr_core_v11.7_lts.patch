@@ -73,6 +73,160 @@ index 83fa5dbb7..f0d85ff9c 100644
  
  	bool End;
  	if(!pSqlServer->Step(&End, pError, ErrorSize))
+diff --git a/src/game/server/ddnetpp/login_ratelimit.h b/src/game/server/ddnetpp/login_ratelimit.h
+new file mode 100644
+index 000000000..885106daf
+--- /dev/null
++++ b/src/game/server/ddnetpp/login_ratelimit.h
+@@ -0,0 +1,148 @@
++#ifndef GAME_SERVER_DDNETPP_LOGIN_RATELIMIT_H
++#define GAME_SERVER_DDNETPP_LOGIN_RATELIMIT_H
++
++#include <base/system.h>
++#include <algorithm>
++#include <cstdint>
++
++struct CLoginBanEntry
++{
++	NETADDR m_Addr;
++	int64_t m_Expire;
++	int64_t m_CooldownUntilTick;
++	int64_t m_LastAttempt;
++	int m_NumAttempts;
++};
++
++struct CLoginAttemptOutcome
++{
++	bool m_Tracked;
++	bool m_FullBanTriggered;
++	int m_Attempts;
++	int m_WaitSeconds;
++};
++
++// Расчёт нарастающей задержки (в секундах) при неудачных попытках входа.
++// Первые 3 попытки (опечатки) не блокируются, далее включается экспоненциальный backoff.
++inline int CalcLoginBackoffSeconds(int Attempts, int MaxAttempts)
++{
++	if(Attempts >= MaxAttempts)
++		return 60 * 60 * 12;
++	if(Attempts <= 3)
++		return 0;
++	static const int s_aSteps[] = {2, 4, 8, 15, 30, 60, 120, 300};
++	int Idx = Attempts - 4;
++	int MaxIdx = (int)(sizeof(s_aSteps) / sizeof(s_aSteps[0])) - 1;
++	return s_aSteps[std::clamp(Idx, 0, MaxIdx)];
++}
++
++// Возвращает оставшееся время блокировки входа (в секундах, с округлением вверх)
++// с учётом как полного бана (m_Expire), так и нарастающей задержки (m_CooldownUntilTick).
++inline int GetLoginBlockRemainingSeconds(const CLoginBanEntry *pEntries, int NumEntries, const NETADDR *pAddr, int64_t CurTick, int64_t TickSpeed)
++{
++	if(pEntries == nullptr || pAddr == nullptr || TickSpeed <= 0)
++		return 0;
++	for(int i = 0; i < NumEntries; i++)
++	{
++		if(net_addr_comp_noport(&pEntries[i].m_Addr, pAddr) == 0)
++		{
++			int64_t UntilTick = std::max(pEntries[i].m_Expire, pEntries[i].m_CooldownUntilTick);
++			if(UntilTick > CurTick)
++				return (int)((UntilTick - CurTick + TickSpeed - 1) / TickSpeed);
++			return 0;
++		}
++	}
++	return 0;
++}
++
++// Регистрирует неудачную попытку входа для IP: сбрасывает протухший счётчик,
++// обновляет время последней попытки и выставляет прогрессивную задержку либо полный бан.
++inline CLoginAttemptOutcome RecordFailedLoginAttempt(CLoginBanEntry *pEntries, int &NumEntries, int MaxEntries, const NETADDR *pAddr, int MaxAttempts, int64_t CurTick, int64_t TickSpeed, int64_t NowTime, int64_t TimeFreq, int DecaySeconds)
++{
++	CLoginAttemptOutcome Out{false, false, 0, 0};
++	int FoundIdx = -1;
++	for(int i = 0; i < NumEntries; i++)
++	{
++		if(net_addr_comp_noport(&pEntries[i].m_Addr, pAddr) == 0)
++		{
++			FoundIdx = i;
++			break;
++		}
++	}
++	if(FoundIdx < 0)
++	{
++		if(NumEntries >= MaxEntries)
++			return Out;
++		FoundIdx = NumEntries++;
++		pEntries[FoundIdx] = CLoginBanEntry{*pAddr, 0, 0, NowTime, 0};
++	}
++	else if(pEntries[FoundIdx].m_Expire <= CurTick && pEntries[FoundIdx].m_LastAttempt + TimeFreq * DecaySeconds < NowTime)
++	{
++		pEntries[FoundIdx].m_NumAttempts = 0;
++		pEntries[FoundIdx].m_CooldownUntilTick = 0;
++	}
++
++	pEntries[FoundIdx].m_LastAttempt = NowTime;
++	int Atts = ++pEntries[FoundIdx].m_NumAttempts;
++	int WaitSecs = CalcLoginBackoffSeconds(Atts, MaxAttempts);
++	Out.m_Tracked = true;
++	Out.m_Attempts = Atts;
++	Out.m_WaitSeconds = WaitSecs;
++	if(Atts >= MaxAttempts)
++	{
++		pEntries[FoundIdx].m_Expire = CurTick + (int64_t)WaitSecs * TickSpeed;
++		pEntries[FoundIdx].m_CooldownUntilTick = 0;
++		Out.m_FullBanTriggered = true;
++	}
++	else if(WaitSecs > 0)
++	{
++		pEntries[FoundIdx].m_CooldownUntilTick = CurTick + (int64_t)WaitSecs * TickSpeed;
++	}
++	return Out;
++}
++
++// Сбрасывает счётчик неудачных попыток и задержку для IP при успешном входе,
++// не снимая при этом активный полный бан входа (если он был выдан вручную).
++inline void ResetLoginAttemptsForAddr(CLoginBanEntry *pEntries, int &NumEntries, const NETADDR *pAddr, int64_t CurTick)
++{
++	if(pEntries == nullptr || pAddr == nullptr)
++		return;
++	for(int i = 0; i < NumEntries; i++)
++	{
++		if(net_addr_comp_noport(&pEntries[i].m_Addr, pAddr) == 0)
++		{
++			if(pEntries[i].m_Expire > CurTick)
++				return;
++			NumEntries--;
++			pEntries[i] = pEntries[NumEntries];
++			pEntries[NumEntries] = CLoginBanEntry{};
++			return;
++		}
++	}
++}
++
++// Удаляет запись о попытках входа для IP после окончания бана и истечения времени хранения DecaySeconds.
++inline bool CleanupExpiredLoginBanForAddr(CLoginBanEntry *pEntries, int &NumEntries, const NETADDR *pAddr, int64_t CurTick, int64_t NowTime, int64_t TimeFreq, int DecaySeconds)
++{
++	if(pEntries == nullptr || pAddr == nullptr)
++		return false;
++	for(int i = 0; i < NumEntries; i++)
++	{
++		if(net_addr_comp_noport(&pEntries[i].m_Addr, pAddr) == 0)
++		{
++			if(pEntries[i].m_Expire > CurTick || pEntries[i].m_CooldownUntilTick > CurTick)
++				return false;
++			if(pEntries[i].m_LastAttempt + TimeFreq * DecaySeconds < NowTime)
++			{
++				NumEntries--;
++				pEntries[i] = pEntries[NumEntries];
++				pEntries[NumEntries] = CLoginBanEntry{};
++				return true;
++			}
++			return false;
++		}
++	}
++	return false;
++}
++
++#endif
 diff --git a/src/game/server/ddnetpp/rcon_configs.cpp b/src/game/server/ddnetpp/rcon_configs.cpp
 index 750d0cf07..e4edc9205 100644
 --- a/src/game/server/ddnetpp/rcon_configs.cpp
@@ -111,6 +265,26 @@ index 52fa341f0..5426460da 100644
  }
  
  void CGameContext::ConSetEyeEmote(IConsole::IResult *pResult,
+diff --git a/src/game/server/ddracechat_ddpp.cpp b/src/game/server/ddracechat_ddpp.cpp
+index 6afe8d9af..e3742ed46 100644
+--- a/src/game/server/ddracechat_ddpp.cpp
++++ b/src/game/server/ddracechat_ddpp.cpp
+@@ -1378,14 +1378,7 @@ void CGameContext::ConLogin(IConsole::IResult *pResult, void *pUserData)
+ 		return;
+ 	}
+ 
+-	const NETADDR *pAddr = pSelf->Server()->ClientAddr(ClientId);
+-	int Banned = 0;
+-
+-	for(int i = 0; i < pSelf->m_NumLoginBans && !Banned; i++)
+-	{
+-		if(!net_addr_comp_noport(pAddr, &pSelf->m_aLoginBans[i].m_Addr))
+-			Banned = (pSelf->m_aLoginBans[i].m_Expire - pSelf->Server()->Tick()) / pSelf->Server()->TickSpeed();
+-	}
++	int Banned = pSelf->GetLoginWaitSeconds(ClientId);
+ 
+ 	if(Banned > 0)
+ 	{
 diff --git a/src/game/server/entities/character.cpp b/src/game/server/entities/character.cpp
 index 552fe95b3..5b594824f 100644
 --- a/src/game/server/entities/character.cpp
@@ -2659,10 +2833,30 @@ index 399218f88..4ad219085 100644
 +	}
 +}
 diff --git a/src/game/server/gamecontext_ddpp.h b/src/game/server/gamecontext_ddpp.h
-index a6208ac63..e1c7505f2 100644
+index a6208ac63..9b997559f 100644
 --- a/src/game/server/gamecontext_ddpp.h
 +++ b/src/game/server/gamecontext_ddpp.h
-@@ -1081,6 +1081,9 @@ private:
+@@ -799,7 +799,10 @@ public:
+ 	static const int REGISTER_BAN_DELAY = 60 * 60 * 12 * 7; // reset register attempts counter every week
+ 	static const int NAMECHANGE_BAN_DELAY = 60 * 60 * 12; // reset namechange counter every day
+ 	void RegisterBanCheck(int ClientId);
++	#include "ddnetpp/login_ratelimit.h"
+ 	void LoginBanCheck(int ClientId);
++	void ResetLoginAttempts(int ClientId);
++	int GetLoginWaitSeconds(int ClientId);
+ 	void CheckDeleteLoginBanEntry(int ClientId);
+ 	void CheckDeleteRegisterBanEntry(int ClientId);
+ 	void CheckDeleteNamechangeMuteEntry(int ClientId);
+@@ -832,7 +835,7 @@ private:
+ 		int m_NumAttempts;
+ 	};
+ 	CGenericBan m_aRegisterBans[MAX_REGISTER_BANS];
+-	CGenericBan m_aLoginBans[MAX_LOGIN_BANS];
++	CLoginBanEntry m_aLoginBans[MAX_LOGIN_BANS];
+ 	CGenericBan m_aNameChangeMutes[MAX_NAME_CHANGE_MUTES];
+ 	NETADDR m_aJailIps[MAX_JAILS];
+ 	int m_NumRegisterBans;
+@@ -1081,6 +1084,9 @@ private:
  
  	// rcon_configs.cpp
  	void RegisterDDNetPPCommands();
@@ -2673,33 +2867,172 @@ index a6208ac63..e1c7505f2 100644
  	bool DDPPCredits();
  	bool DDPPInfo();
 diff --git a/src/game/server/gamecontext_ratelimits.cpp b/src/game/server/gamecontext_ratelimits.cpp
-index ac69c4e11..335fb06f5 100644
+index ac69c4e11..dc31dfbe9 100644
 --- a/src/game/server/gamecontext_ratelimits.cpp
 +++ b/src/game/server/gamecontext_ratelimits.cpp
-@@ -186,13 +186,11 @@ void CGameContext::LoginBanCheck(int ClientId)
- 	char aBuf[128];
- 	int Found = 0;
- 	int Atts = 0;
--	int64_t BanTime = 0;
- 	// find a matching ban for this ip, update expiration time if found
- 	for(int i = 0; i < m_NumLoginBans; i++)
+@@ -104,30 +104,24 @@ void CGameContext::RegisterBan(const NETADDR *pAddr, int Secs, const char *pDisp
+ void CGameContext::CheckDeleteLoginBanEntry(int ClientId)
+ {
+ 	const NETADDR *pAddr = Server()->ClientAddr(ClientId);
+-	// find a matching ban for this ip, delete if expired
+-	for(int i = 0; i < m_NumLoginBans; i++)
++	if(CleanupExpiredLoginBanForAddr(m_aLoginBans, m_NumLoginBans, pAddr, Server()->Tick(), time_get(), time_freq(), LOGIN_BAN_DELAY))
  	{
- 		if(net_addr_comp_noport(&m_aLoginBans[i].m_Addr, pAddr) == 0)
- 		{
--			BanTime = (m_aLoginBans[i].m_Expire - Server()->Tick()) / Server()->TickSpeed();
- 			m_aLoginBans[m_NumLoginBans].m_LastAttempt = time_get();
- 			Atts = ++m_aLoginBans[i].m_NumAttempts;
- 			Found = 1;
-@@ -217,8 +215,7 @@ void CGameContext::LoginBanCheck(int ClientId)
+-		if(net_addr_comp_noport(&m_aLoginBans[i].m_Addr, pAddr) == 0)
+-		{
+-			int64_t BanTime = (m_aLoginBans[i].m_Expire - Server()->Tick()) / Server()->TickSpeed();
+-			if(BanTime > 0)
+-				return;
+-			if(m_aLoginBans[i].m_LastAttempt + (time_freq() * LOGIN_BAN_DELAY) < time_get())
+-			{
+-				// TODO: be consistent with log types... sometimes its "bans", "mutes", "login_bans", "account" like wtf?
+-				dbg_msg("mutes", "delete login ban entry for player=%d:'%s' due to expiration", ClientId, Server()->ClientName(ClientId));
+-				m_aLoginBans[m_NumLoginBans].m_NumAttempts = 0;
+-				if(ClientId < 0 || ClientId >= m_NumLoginBans)
+-					return;
+-
+-				m_NumLoginBans--;
+-				m_aLoginBans[ClientId] = m_aLoginBans[m_NumLoginBans];
+-				return;
+-			}
+-		}
++		dbg_msg("mutes", "delete login ban entry for player=%d:'%s' due to expiration", ClientId, Server()->ClientName(ClientId));
+ 	}
+ }
  
- 	if(Atts >= g_Config.m_SvMaxLoginPerIp)
- 		LoginBan(pAddr, 60 * 60 * 12, Server()->ClientName(ClientId));
++void CGameContext::ResetLoginAttempts(int ClientId)
++{
++	const NETADDR *pAddr = Server()->ClientAddr(ClientId);
++	ResetLoginAttemptsForAddr(m_aLoginBans, m_NumLoginBans, pAddr, Server()->Tick());
++}
++
++int CGameContext::GetLoginWaitSeconds(int ClientId)
++{
++	const NETADDR *pAddr = Server()->ClientAddr(ClientId);
++	return GetLoginBlockRemainingSeconds(m_aLoginBans, m_NumLoginBans, pAddr, Server()->Tick(), Server()->TickSpeed());
++}
++
+ void CGameContext::CheckDeleteRegisterBanEntry(int ClientId)
+ {
+ 	const NETADDR *pAddr = Server()->ClientAddr(ClientId);
+@@ -139,15 +133,12 @@ void CGameContext::CheckDeleteRegisterBanEntry(int ClientId)
+ 			int64_t BanTime = (m_aRegisterBans[i].m_Expire - Server()->Tick()) / Server()->TickSpeed();
+ 			if(BanTime > 0)
+ 				return;
+-			if(m_aNameChangeMutes[i].m_LastAttempt + (time_freq() * REGISTER_BAN_DELAY) < time_get())
++			if(m_aRegisterBans[i].m_LastAttempt + (time_freq() * REGISTER_BAN_DELAY) < time_get())
+ 			{
+ 				dbg_msg("mutes", "delete register ban entry for player=%d:'%s' due to expiration", ClientId, Server()->ClientName(ClientId));
+-				m_aRegisterBans[m_NumRegisterBans].m_NumAttempts = 0;
+-				if(ClientId < 0 || ClientId >= m_NumRegisterBans)
+-					return;
+-
+ 				m_NumRegisterBans--;
+-				m_aRegisterBans[ClientId] = m_aRegisterBans[m_NumRegisterBans];
++				m_aRegisterBans[i] = m_aRegisterBans[m_NumRegisterBans];
++				m_aRegisterBans[m_NumRegisterBans] = {};
+ 				return;
+ 			}
+ 		}
+@@ -168,12 +159,9 @@ void CGameContext::CheckDeleteNamechangeMuteEntry(int ClientId)
+ 			if(m_aNameChangeMutes[i].m_LastAttempt + (time_freq() * NAMECHANGE_BAN_DELAY) < time_get())
+ 			{
+ 				dbg_msg("mutes", "delete namechange mute entry for player=%d:'%s' due to expiration", ClientId, Server()->ClientName(ClientId));
+-				m_aNameChangeMutes[m_NumNameChangeMutes].m_NumAttempts = 0;
+-				if(ClientId < 0 || ClientId >= m_NumNameChangeMutes)
+-					return;
+-
+ 				m_NumNameChangeMutes--;
+-				m_aNameChangeMutes[ClientId] = m_aNameChangeMutes[m_NumNameChangeMutes];
++				m_aNameChangeMutes[i] = m_aNameChangeMutes[m_NumNameChangeMutes];
++				m_aNameChangeMutes[m_NumNameChangeMutes] = {};
+ 				return;
+ 			}
+ 		}
+@@ -184,45 +172,31 @@ void CGameContext::LoginBanCheck(int ClientId)
+ {
+ 	const NETADDR *pAddr = Server()->ClientAddr(ClientId);
+ 	char aBuf[128];
+-	int Found = 0;
+-	int Atts = 0;
+-	int64_t BanTime = 0;
+-	// find a matching ban for this ip, update expiration time if found
+-	for(int i = 0; i < m_NumLoginBans; i++)
++	CLoginAttemptOutcome Outcome = RecordFailedLoginAttempt(
++		m_aLoginBans,
++		m_NumLoginBans,
++		MAX_LOGIN_BANS,
++		pAddr,
++		g_Config.m_SvMaxLoginPerIp,
++		Server()->Tick(),
++		Server()->TickSpeed(),
++		time_get(),
++		time_freq(),
++		LOGIN_BAN_DELAY);
++
++	if(Outcome.m_FullBanTriggered)
+ 	{
+-		if(net_addr_comp_noport(&m_aLoginBans[i].m_Addr, pAddr) == 0)
+-		{
+-			BanTime = (m_aLoginBans[i].m_Expire - Server()->Tick()) / Server()->TickSpeed();
+-			m_aLoginBans[m_NumLoginBans].m_LastAttempt = time_get();
+-			Atts = ++m_aLoginBans[i].m_NumAttempts;
+-			Found = 1;
+-			// dbg_msg("login", "found ClientId=%d with %d failed attempts.", ClientId, atts);
+-			break;
+-		}
++		LoginBan(pAddr, Outcome.m_WaitSeconds, Server()->ClientName(ClientId));
+ 	}
+-
+-	if(!Found) // nothing found so far, find a free slot..
++	else if(Outcome.m_WaitSeconds > 0)
+ 	{
+-		if(m_NumLoginBans < MAX_LOGIN_BANS)
+-		{
+-			m_aLoginBans[m_NumLoginBans].m_LastAttempt = time_get();
+-			m_aLoginBans[m_NumLoginBans].m_Expire = 0;
+-			m_aLoginBans[m_NumLoginBans].m_Addr = *pAddr;
+-			Atts = m_aLoginBans[m_NumLoginBans].m_NumAttempts = 1;
+-			m_NumLoginBans++;
+-			Found = 1;
+-			// dbg_msg("login", "adding ClientId=%d with %d failed attempts.", ClientId, atts);
+-		}
++		str_format(aBuf, sizeof(aBuf), "[ACCOUNT] Too many failed attempts. Please wait %d seconds before trying again.", Outcome.m_WaitSeconds);
++		SendChatTarget(ClientId, aBuf);
+ 	}
+ 
+-	if(Atts >= g_Config.m_SvMaxLoginPerIp)
+-		LoginBan(pAddr, 60 * 60 * 12, Server()->ClientName(ClientId));
 -	else if(Atts % 3 == 0 && BanTime < 60) // rate limit every 3 fails for 1 minute ( only if bantime is less than 1 min )
 -		LoginBan(pAddr, 60, Server()->ClientName(ClientId));
-+	// Не баним новичков на 60 секунд за опечатки при вводе /reg или /login
- 
- 	if(Found)
+-
+-	if(Found)
++	if(Outcome.m_Tracked)
  	{
+-		str_format(aBuf, sizeof(aBuf), "ClientId=%d has %d/%d failed account login attempts.", ClientId, Atts, g_Config.m_SvMaxLoginPerIp);
++		str_format(aBuf, sizeof(aBuf), "ClientId=%d has %d/%d failed account login attempts.", ClientId, Outcome.m_Attempts, g_Config.m_SvMaxLoginPerIp);
+ 		Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "accounts", aBuf);
+ 	}
+ 	else // no free slot found
+@@ -254,8 +228,7 @@ void CGameContext::LoginBan(const NETADDR *pAddr, int Secs, const char *pDisplay
+ 	{
+ 		if(m_NumLoginBans < MAX_LOGIN_BANS)
+ 		{
+-			m_aLoginBans[m_NumLoginBans].m_Addr = *pAddr;
+-			m_aLoginBans[m_NumLoginBans].m_Expire = Server()->Tick() + Secs * Server()->TickSpeed();
++			m_aLoginBans[m_NumLoginBans] = CLoginBanEntry{*pAddr, Server()->Tick() + Secs * Server()->TickSpeed(), 0, time_get(), 0};
+ 			m_NumLoginBans++;
+ 			Found = 1;
+ 		}
+@@ -305,7 +278,7 @@ int64_t CGameContext::NameChangeMuteCheck(int ClientId)
+ 
+ 	if(!Found) // nothing found so far, find a free slot..
+ 	{
+-		if(m_NumNameChangeMutes < MAX_REGISTER_BANS)
++		if(m_NumNameChangeMutes < MAX_NAME_CHANGE_MUTES)
+ 		{
+ 			m_aNameChangeMutes[m_NumNameChangeMutes].m_Addr = *pAddr;
+ 			Changes = m_aNameChangeMutes[m_NumNameChangeMutes].m_NumAttempts = 1;
 diff --git a/src/game/server/gamecontroller.cpp b/src/game/server/gamecontroller.cpp
 index 63813bf32..3bdeb7d58 100644
 --- a/src/game/server/gamecontroller.cpp
@@ -3042,6 +3375,18 @@ index f14d56960..770615e76 100644
  	// bool m_IsGodMode; //no damage (only useful in vanilla or pvp based subgametypes)
  	bool m_MapSaveLoaded;
  	CTeeInfo m_LastToucherTeeInfos;
+diff --git a/src/game/server/player_sql.cpp b/src/game/server/player_sql.cpp
+index ee8368cbd..b121fada4 100644
+--- a/src/game/server/player_sql.cpp
++++ b/src/game/server/player_sql.cpp
+@@ -162,6 +162,7 @@ void CPlayer::DDPPProcessScoreResult(CAccountResult &Result)
+ 			break;
+ 		case CAccountResult::LOGIN_INFO:
+ 			m_Account = Result.m_Account;
++			GameServer()->ResetLoginAttempts(m_ClientId);
+ 			OnLogin();
+ 			break;
+ 		case CAccountResult::REGISTER:
 diff --git a/src/game/server/teams.cpp b/src/game/server/teams.cpp
 index 90f67c7ff..895d903d9 100644
 --- a/src/game/server/teams.cpp
@@ -3085,3 +3430,121 @@ index da857c98e..3b46a7a7b 100644
  
  	int ModeSpecial = GameServer()->m_pController->OnCharacterDeath(pVictim, (Killer < 0) ? nullptr : GameServer()->m_apPlayers[Killer], Weapon);
  
+diff --git a/src/test/ddnetpp_login_ratelimit_test.cpp b/src/test/ddnetpp_login_ratelimit_test.cpp
+new file mode 100644
+index 000000000..df86d1363
+--- /dev/null
++++ b/src/test/ddnetpp_login_ratelimit_test.cpp
+@@ -0,0 +1,112 @@
++#include "test.h"
++
++#include <game/server/ddnetpp/login_ratelimit.h>
++#include <gtest/gtest.h>
++
++static NETADDR MakeTestAddr(uint8_t LastOctet, uint16_t Port = 8303)
++{
++	NETADDR Addr{};
++	Addr.type = NETTYPE_IPV4;
++	Addr.ip[0] = 10;
++	Addr.ip[1] = 0;
++	Addr.ip[2] = 0;
++	Addr.ip[3] = LastOctet;
++	Addr.port = Port;
++	return Addr;
++}
++
++TEST(DDNetPPLoginRatelimit, AllowsThreeTyposWithoutDelay)
++{
++	CLoginBanEntry aEntries[8]{};
++	int Num = 0;
++	NETADDR Addr = MakeTestAddr(10);
++	const int64_t TickSpeed = 50;
++	const int64_t Freq = 1000;
++
++	for(int Attempt = 1; Attempt <= 3; Attempt++)
++	{
++		auto Out = RecordFailedLoginAttempt(aEntries, Num, 8, &Addr, 12, 100 + Attempt, TickSpeed, 1000 + Attempt, Freq, 43200);
++		EXPECT_TRUE(Out.m_Tracked);
++		EXPECT_FALSE(Out.m_FullBanTriggered);
++		EXPECT_EQ(Out.m_Attempts, Attempt);
++		EXPECT_EQ(Out.m_WaitSeconds, 0);
++		EXPECT_EQ(GetLoginBlockRemainingSeconds(aEntries, Num, &Addr, 100 + Attempt, TickSpeed), 0);
++	}
++}
++
++TEST(DDNetPPLoginRatelimit, ProgressiveBackoffAndRetryAfterDelay)
++{
++	CLoginBanEntry aEntries[8]{};
++	int Num = 0;
++	NETADDR Addr = MakeTestAddr(11);
++	const int64_t TickSpeed = 50;
++	const int64_t Freq = 1000;
++
++	for(int Attempt = 1; Attempt <= 3; Attempt++)
++		RecordFailedLoginAttempt(aEntries, Num, 8, &Addr, 12, 100, TickSpeed, 1000, Freq, 43200);
++
++	// 4-я попытка -> задержка 2 секунды (100 тиков)
++	auto Out4 = RecordFailedLoginAttempt(aEntries, Num, 8, &Addr, 12, 200, TickSpeed, 2000, Freq, 43200);
++	EXPECT_EQ(Out4.m_WaitSeconds, 2);
++	EXPECT_FALSE(Out4.m_FullBanTriggered);
++	EXPECT_EQ(GetLoginBlockRemainingSeconds(aEntries, Num, &Addr, 200, TickSpeed), 2);
++	EXPECT_EQ(GetLoginBlockRemainingSeconds(aEntries, Num, &Addr, 299, TickSpeed), 1);
++	// После истечения 2 секунд повторная попытка снова разрешена
++	EXPECT_EQ(GetLoginBlockRemainingSeconds(aEntries, Num, &Addr, 300, TickSpeed), 0);
++
++	// 5-я попытка -> задержка 4 секунды (200 тиков)
++	auto Out5 = RecordFailedLoginAttempt(aEntries, Num, 8, &Addr, 12, 300, TickSpeed, 3000, Freq, 43200);
++	EXPECT_EQ(Out5.m_WaitSeconds, 4);
++	EXPECT_EQ(GetLoginBlockRemainingSeconds(aEntries, Num, &Addr, 300, TickSpeed), 4);
++	EXPECT_EQ(GetLoginBlockRemainingSeconds(aEntries, Num, &Addr, 500, TickSpeed), 0);
++}
++
++TEST(DDNetPPLoginRatelimit, FullBanAtMaxAttemptsAndSuccessReset)
++{
++	CLoginBanEntry aEntries[8]{};
++	int Num = 0;
++	NETADDR AddrA = MakeTestAddr(12);
++	NETADDR AddrB = MakeTestAddr(13);
++	const int64_t TickSpeed = 50;
++	const int64_t Freq = 1000;
++
++	for(int Attempt = 1; Attempt <= 5; Attempt++)
++		RecordFailedLoginAttempt(aEntries, Num, 8, &AddrA, 12, 100, TickSpeed, 1000, Freq, 43200);
++	EXPECT_GT(GetLoginBlockRemainingSeconds(aEntries, Num, &AddrA, 100, TickSpeed), 0);
++
++	// Успешный вход сбрасывает счётчик и задержку для AddrA
++	ResetLoginAttemptsForAddr(aEntries, Num, &AddrA, 100);
++	EXPECT_EQ(GetLoginBlockRemainingSeconds(aEntries, Num, &AddrA, 100, TickSpeed), 0);
++	EXPECT_EQ(Num, 0);
++
++	// Достижение лимита 12 попыток на AddrB -> полный бан на 12 часов
++	CLoginAttemptOutcome Last{};
++	for(int Attempt = 1; Attempt <= 12; Attempt++)
++		Last = RecordFailedLoginAttempt(aEntries, Num, 8, &AddrB, 12, 500, TickSpeed, 5000, Freq, 43200);
++	EXPECT_TRUE(Last.m_FullBanTriggered);
++	EXPECT_EQ(Last.m_WaitSeconds, 43200);
++	EXPECT_EQ(GetLoginBlockRemainingSeconds(aEntries, Num, &AddrB, 500, TickSpeed), 43200);
++}
++
++TEST(DDNetPPLoginRatelimit, ExpirationCleanupPreservesOtherIps)
++{
++	CLoginBanEntry aEntries[8]{};
++	int Num = 0;
++	NETADDR Addr1 = MakeTestAddr(21);
++	NETADDR Addr2 = MakeTestAddr(22);
++	const int64_t TickSpeed = 50;
++	const int64_t Freq = 1000;
++	const int Decay = 43200;
++
++	RecordFailedLoginAttempt(aEntries, Num, 8, &Addr1, 12, 100, TickSpeed, 1000, Freq, Decay);
++	RecordFailedLoginAttempt(aEntries, Num, 8, &Addr2, 12, 200, TickSpeed, 1000 + 40000 * Freq, Freq, Decay);
++	EXPECT_EQ(Num, 2);
++
++	// Прошло 43201 сек для Addr1, но только 3201 сек для Addr2
++	int64_t Now = 1000 + 43201 * Freq;
++	EXPECT_TRUE(CleanupExpiredLoginBanForAddr(aEntries, Num, &Addr1, 500, Now, Freq, Decay));
++	EXPECT_EQ(Num, 1);
++	EXPECT_FALSE(CleanupExpiredLoginBanForAddr(aEntries, Num, &Addr2, 500, Now, Freq, Decay));
++	EXPECT_EQ(Num, 1);
++	EXPECT_EQ(net_addr_comp_noport(&aEntries[0].m_Addr, &Addr2), 0);
++}

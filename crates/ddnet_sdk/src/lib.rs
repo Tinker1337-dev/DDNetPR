@@ -17,6 +17,7 @@ pub mod dx;
 pub use dx::prelude;
 
 pub use dx::{PlayerId, RayHit, RayMask, SdkError, Vec2, Weapon};
+use dx::{MAX_HUD_SLOTS, MAX_VISUAL_LASERS, MAX_VISUAL_PICKUPS, MAX_VISUAL_TEES, MAX_VISUAL_TEXTS, validate_ammo, validate_cid, validate_coords, validate_freeze_secs, validate_gamemode, validate_score, validate_sound_cid, validate_speed, validate_visual_id, validate_weapon};
 
 use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, Write};
@@ -366,6 +367,36 @@ impl Default for ServerApi {
     }
 }
 
+/// Очищает текст для передачи внутри двойных кавычек FIFO-команды.
+pub(crate) fn sanitize_quoted_text(s: &str) -> String {
+    s.chars().filter(|&c| !c.is_control() || c == '\t').map(|c| if c == '"' { '\'' } else { c }).collect()
+}
+/// Очищает ключ БД или имя плагина от разделителей IPC/БД и управляющих символов.
+pub(crate) fn sanitize_ipc_key(s: &str) -> String {
+    s.chars().filter(|&c| !c.is_control() && c != '|' && c != '=').collect()
+}
+/// Очищает значение поля IPC от управляющих символов и переводов строк.
+pub(crate) fn sanitize_ipc_val(s: &str) -> String {
+    s.chars().filter(|&c| !c.is_control() || c == '\t').collect()
+}
+/// Декодирует экранированные символы IPC-поля (%7C -> |, %25 -> %).
+pub(crate) fn unescape_ipc_field(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            match &bytes[i + 1..i + 3] {
+                b"7C" | b"7c" => { out.push('|'); i += 3; continue; }
+                b"25" => { out.push('%'); i += 3; continue; }
+                _ => {}
+            }
+        }
+        if let Some(ch) = s[i..].chars().next() { out.push(ch); i += ch.len_utf8(); } else { break; }
+    }
+    out
+}
+
 impl ServerApi {
     /// Создаёт новый экземпляр `ServerApi` и сообщает версию SDK менеджеру плагинов.
     ///
@@ -407,8 +438,10 @@ impl ServerApi {
     /// api.raw("@PONG");
     /// ```
     pub fn raw(&self, cmd: &str) {
+        let clean: String = cmd.chars().filter(|&c| c != '\n' && c != '\r' && c != '\0' && (!c.is_control() || c == '\t')).collect();
+        if clean.is_empty() { return; }
         let mut out = io::stdout().lock();
-        let _ = writeln!(out, "{}", cmd);
+        let _ = writeln!(out, "{}", clean);
         let _ = out.flush();
     }
 
@@ -551,7 +584,7 @@ impl ServerApi {
     /// api.say("Hello server!");
     /// ```
     pub fn say(&self, msg: &str) {
-        self.raw(&format!("say \"{}\"", msg.replace('"', "'")));
+        self.raw(&format!("say \"{}\"", sanitize_quoted_text(msg)));
     }
 
     /// Отправляет личное сообщение (шёпот) игроку по никнейму.
@@ -563,11 +596,7 @@ impl ServerApi {
     /// api.whisper("nameless", "Hi!");
     /// ```
     pub fn whisper(&self, player: &str, msg: &str) {
-        self.raw(&format!(
-            "whisper \"{}\" \"{}\"",
-            player.replace('"', "'"),
-            msg.replace('"', "'")
-        ));
+        self.raw(&format!("whisper \"{}\" \"{}\"", sanitize_quoted_text(player), sanitize_quoted_text(msg)));
     }
 
     /// Отправляет личное сообщение (шёпот) игроку по типизированному `PlayerId`.
@@ -593,7 +622,7 @@ impl ServerApi {
     /// api.send_to("plugin_hub", "PING");
     /// ```
     pub fn send_to(&self, target: &str, payload: &str) {
-        self.raw(&format!("@TO {}|{}", target, payload));
+        self.raw(&format!("@TO {}|{}", sanitize_ipc_key(target), sanitize_ipc_val(payload)));
     }
 
     /// Рассылает данные по общей межплагинной шине IPC.
@@ -605,7 +634,7 @@ impl ServerApi {
     /// api.broadcast_bus("SYNC");
     /// ```
     pub fn broadcast_bus(&self, payload: &str) {
-        self.raw(&format!("@BUS {}", payload));
+        self.raw(&format!("@BUS {}", sanitize_ipc_val(payload)));
     }
 
     /// Записывает пару ключ-значение в `plugins_kv.db`.
@@ -617,7 +646,7 @@ impl ServerApi {
     /// api.db_set("demo:key", "1");
     /// ```
     pub fn db_set(&self, key: &str, val: &str) {
-        self.raw(&format!("@DB SET|{}|{}", key, val));
+        self.raw(&format!("@DB SET|{}|{}", sanitize_ipc_key(key), sanitize_ipc_val(val)));
     }
 
     /// Запрашивает значение по ключу из `plugins_kv.db` (ответ приходит в `Event::DbValue`).
@@ -629,7 +658,7 @@ impl ServerApi {
     /// api.db_get("req1", "demo:key");
     /// ```
     pub fn db_get(&self, req_id: &str, key: &str) {
-        self.raw(&format!("@DB GET|{}|{}", req_id, key));
+        self.raw(&format!("@DB GET|{}|{}", sanitize_ipc_key(req_id), sanitize_ipc_key(key)));
     }
 
     /// Атомарно прибавляет `delta` к числовому ключу в `plugins_kv.db`.
@@ -641,7 +670,7 @@ impl ServerApi {
     /// api.db_add("demo:count", 5);
     /// ```
     pub fn db_add(&self, key: &str, delta: i64) {
-        self.raw(&format!("@DB ADD|{}|{}", key, delta));
+        self.raw(&format!("@DB ADD|{}|{}", sanitize_ipc_key(key), delta));
     }
 
     /// Удаляет ключ из `plugins_kv.db`.
@@ -653,7 +682,7 @@ impl ServerApi {
     /// api.db_del("demo:key");
     /// ```
     pub fn db_del(&self, key: &str) {
-        self.raw(&format!("@DB DEL|{}", key));
+        self.raw(&format!("@DB DEL|{}", sanitize_ipc_key(key)));
     }
 
     /// Удаляет все ключи с префиксом `prefix` из `plugins_kv.db`.
@@ -665,7 +694,7 @@ impl ServerApi {
     /// api.db_del_prefix("demo:");
     /// ```
     pub fn db_del_prefix(&self, prefix: &str) {
-        self.raw(&format!("@DB DEL_PREFIX|{}", prefix));
+        self.raw(&format!("@DB DEL_PREFIX|{}", sanitize_ipc_key(prefix)));
     }
 
     /// Запрашивает все ключи с префиксом `prefix` (ответ приходит в `Event::DbList`).
@@ -677,10 +706,10 @@ impl ServerApi {
     /// api.db_prefix("req_p", "demo:");
     /// ```
     pub fn db_prefix(&self, req_id: &str, prefix: &str) {
-        self.raw(&format!("@DB PREFIX|{}|{}", req_id, prefix));
+        self.raw(&format!("@DB PREFIX|{}|{}", sanitize_ipc_key(req_id), sanitize_ipc_key(prefix)));
     }
 
-    /// Устанавливает постоянную строку HUD в слоте `1..=5` для игрока.
+    /// Устанавливает постоянную строку HUD в слоте `0..=4` для игрока.
     ///
     /// # Примеры
     /// ```
@@ -709,7 +738,7 @@ impl ServerApi {
         if !cid.is_valid() {
             return Err(SdkError::InvalidCid(cid));
         }
-        if slot > 4 || text.chars().count() > 200 {
+        if slot >= MAX_HUD_SLOTS || text.chars().count() > 200 {
             return Err(SdkError::InvalidArg {
                 name: "slot/text",
                 reason: "slot must be 0..=4 and text <= 200 chars",
@@ -720,7 +749,7 @@ impl ServerApi {
         Ok(())
     }
 
-    /// Очищает строку HUD в слоте `1..=5` для игрока.
+    /// Очищает строку HUD в слоте `0..=4` для игрока.
     ///
     /// # Примеры
     /// ```
@@ -732,7 +761,7 @@ impl ServerApi {
         if !cid.is_valid() {
             return Err(SdkError::InvalidCid(cid));
         }
-        if slot > 4 {
+        if slot >= MAX_HUD_SLOTS {
             return Err(SdkError::InvalidArg {
                 name: "slot",
                 reason: "slot must be 0..=4",
@@ -790,6 +819,12 @@ impl ServerApi {
         gravity: f32,
         ttl_ms: u32,
     ) -> Result<(), SdkError> {
+        if !owner_cid.is_valid() { return Err(SdkError::InvalidCid(owner_cid)); }
+        validate_coords(pos.x, pos.y)?;
+        validate_speed(vel.x, vel.y)?;
+        if !gravity.is_finite() || gravity.abs() > 10.0 {
+            return Err(SdkError::InvalidArg { name: "gravity", reason: "gravity must be finite within -10.0..=10.0" });
+        }
         self.raw(&format!(
             "spawn_proj {} {} {:.1} {:.1} {:.2} {:.2} {:.3} {}",
             id, owner_cid.0, pos.x, pos.y, vel.x, vel.y, gravity, ttl_ms
@@ -910,7 +945,7 @@ impl ServerApi {
     /// api.state_set("wave", "3");
     /// ```
     pub fn state_set(&self, key: &str, val: &str) {
-        self.raw(&format!("@PSTATE SET|{}|{}", key, val));
+        self.raw(&format!("@PSTATE SET|{}|{}", sanitize_ipc_key(key), sanitize_ipc_val(val)));
     }
 
     /// Читает значение состояния из пространства имён плагина (ответ приходит в `Event::DbValue`).
@@ -922,7 +957,7 @@ impl ServerApi {
     /// api.state_get("st1", "wave");
     /// ```
     pub fn state_get(&self, req_id: &str, key: &str) {
-        self.raw(&format!("@PSTATE GET|{}|{}", req_id, key));
+        self.raw(&format!("@PSTATE GET|{}|{}", sanitize_ipc_key(req_id), sanitize_ipc_key(key)));
     }
 
     /// Планирует однократное событие `Event::Scheduled { callback_id }` через `delay_ms` мс.
@@ -1134,7 +1169,7 @@ impl ServerApi {
     }
     /// Отправляет экранный баннер (broadcast) конкретному клиенту по CID.
     pub fn broadcast_to(&self, cid: i32, msg: &str) {
-        self.raw(&format!("broadcast_to {} {}", cid, msg));
+        self.raw(&format!("broadcast_to {} \"{}\"", cid, sanitize_quoted_text(msg)));
     }
     /// Запрашивает ключи, начинающиеся с префикса (устаревший псевдоним v9.2).
     pub fn db_get_prefix(&self, req_id: &str, prefix: &str) {
@@ -1150,32 +1185,32 @@ impl ServerApi {
     }
     /// Проигрывает звуковой эффект для клиента по CID (`-1` — для всех).
     pub fn play_sound(&self, cid: i32, id: i32) {
-        self.raw(&format!("play_sound {} {}", cid, id));
+        if validate_sound_cid(cid).is_ok() && id >= 0 { self.raw(&format!("play_sound {} {}", cid, id)); }
     }
     /// Замораживает или размораживает игрока на `secs` секунд.
     pub fn set_freeze(&self, cid: i32, secs: i32) {
-        self.raw(&format!("set_freeze {} {}", cid, secs));
+        if validate_cid(cid).is_ok() && validate_freeze_secs(secs).is_ok() { self.raw(&format!("set_freeze {} {}", cid, secs)); }
     }
     /// Устанавливает вектор скорости игрока.
     pub fn set_vel(&self, cid: i32, vx: f32, vy: f32) {
-        self.raw(&format!("set_vel {} {:.2} {:.2}", cid, vx, vy));
+        if validate_cid(cid).is_ok() && validate_speed(vx, vy).is_ok() { self.raw(&format!("set_vel {} {:.2} {:.2}", cid, vx, vy)); }
     }
     /// Добавляет импульс (vx, vy) к текущей скорости игрока.
     pub fn apply_impulse(&self, cid: i32, vx: f32, vy: f32) {
-        self.raw(&format!("plugin_apply_impulse {} {:.2} {:.2}", cid, vx, vy));
+        if validate_cid(cid).is_ok() && validate_speed(vx, vy).is_ok() { self.raw(&format!("plugin_apply_impulse {} {:.2} {:.2}", cid, vx, vy)); }
     }
     /// Телепортирует игрока в указанные мировые координаты.
     pub fn set_pos(&self, cid: i32, x: f32, y: f32) {
-        self.raw(&format!("set_pos {} {:.1} {:.1}", cid, x, y));
+        if validate_cid(cid).is_ok() && validate_coords(x, y).is_ok() { self.raw(&format!("set_pos {} {:.1} {:.1}", cid, x, y)); }
     }
 
     /// Выдаёт игроку оружие по идентификатору (`0..=5`).
     pub fn give_weapon(&self, cid: i32, w: i32) {
-        self.raw(&format!("give_weapon {} {}", cid, w));
+        if validate_cid(cid).is_ok() && validate_weapon(w).is_ok() { self.raw(&format!("give_weapon {} {}", cid, w)); }
     }
     /// Устанавливает количество патронов для оружия игрока.
     pub fn set_ammo(&self, cid: i32, w: i32, ammo: i32) {
-        self.raw(&format!("set_ammo {} {} {}", cid, w, ammo));
+        if validate_cid(cid).is_ok() && validate_weapon(w).is_ok() && validate_ammo(ammo).is_ok() { self.raw(&format!("set_ammo {} {} {}", cid, w, ammo)); }
     }
     /// Включает или отключает неуязвимость игрока.
     pub fn set_invincible(&self, cid: i32, on: bool) {
@@ -1269,6 +1304,7 @@ impl ServerApi {
     }
     /// Создаёт постоянный визуальный лазер OnSnap с указанным ID.
     pub fn spawn_visual_laser(&self, id: i32, x1: f32, y1: f32, x2: f32, y2: f32, kind: i32) {
+        if validate_visual_id(id, MAX_VISUAL_LASERS, "laser_id").is_err() || validate_coords(x1, y1).is_err() || validate_coords(x2, y2).is_err() { return; }
         self.raw(&format!(
             "spawn_visual_laser {} {:.1} {:.1} {:.1} {:.1} {}",
             id, x1, y1, x2, y2, kind
@@ -1277,7 +1313,7 @@ impl ServerApi {
     /// Удаляет все постоянные визуальные лазеры.
     /// Удаляет постоянный визуальный лазер по его ID.
     pub fn remove_visual_laser(&self, id: i32) {
-        self.raw(&format!("remove_visual_laser {}", id));
+        if validate_visual_id(id, MAX_VISUAL_LASERS, "laser_id").is_ok() { self.raw(&format!("remove_visual_laser {}", id)); }
     }
     /// Удаляет все постоянные визуальные лазеры этого плагина.
     pub fn clear_visual_lasers(&self) {
@@ -1285,6 +1321,7 @@ impl ServerApi {
     }
     /// Создаёт постоянный визуальный пикап OnSnap с указанным ID.
     pub fn spawn_visual_pickup(&self, id: i32, kind: i32, sub: i32, x: f32, y: f32) {
+        if validate_visual_id(id, MAX_VISUAL_PICKUPS, "pickup_id").is_err() || validate_coords(x, y).is_err() { return; }
         self.raw(&format!(
             "spawn_visual_pickup {} {} {} {:.1} {:.1}",
             id, kind, sub, x, y
@@ -1309,13 +1346,12 @@ impl ServerApi {
     }
     /// Меняет активную карту сервера командой `change_map "<map>"`.
     pub fn change_map(&self, map: &str) {
-        let safe: String = map.chars().filter(|&c| c != '"' && c != '\n' && c != '\r').collect();
-        if !safe.is_empty() {
+        if let Some(safe) = sanitize_map_name(map) {
             self.raw(&format!(r#"change_map "{}""#, safe));
         }
     }
-    /// Устанавливает режим таблицы очков (`0` = гонка/время, `1` = очки, `2` = командные очки).
-    pub fn set_gamemode(&self, mode: i32) { self.raw(&format!("set_gamemode {}", mode)); }
+    /// Устанавливает режим таблицы очков (0 = гонка, 1 = FFA, 2 = командный, 3 = FNG).
+    pub fn set_gamemode(&self, mode: i32) { if validate_gamemode(mode).is_ok() { self.raw(&format!("set_gamemode {}", mode)); } }
     /// Устанавливает очки игрока в таблице по никнейму.
     pub fn set_player_score_name(&self, name: &str, score: i32) { self.raw(&format!(r#"set_player_score "{}" {}"#, name, score)); }
     /// Устанавливает таймаут автосмерти в тайле заморозки в секундах (`0` = выкл).
@@ -1327,18 +1363,19 @@ impl ServerApi {
     /// Включает или отключает стартовый набор FNG (только молот и лазер).
     pub fn set_fng_weapons(&self, on: bool) { self.raw(&format!("set_fng_weapons {}", if on { 1 } else { 0 })); }
     /// Устанавливает целочисленные очки игрока в таблице.
-    pub fn set_player_score(&self, cid: i32, score: i32) { self.raw(&format!("set_player_score {} {}", cid, score)); }
+    pub fn set_player_score(&self, cid: i32, score: i32) { if validate_cid(cid).is_ok() && validate_score(score).is_ok() { self.raw(&format!("set_player_score {} {}", cid, score)); } }
     /// Переводит игрока в команду (`0` = Red, `1` = Blue, `-1` = Наблюдатели).
     pub fn set_player_team(&self, cid: i32, team: i32) { self.raw(&format!("set_player_team {} {}", cid, team)); }
     /// Устанавливает счёт команд Red и Blue.
-    pub fn set_team_score(&self, red: i32, blue: i32) { self.raw(&format!("set_team_score {} {}", red, blue)); }
+    pub fn set_team_score(&self, red: i32, blue: i32) { if validate_score(red).is_ok() && validate_score(blue).is_ok() { self.raw(&format!("set_team_score {} {}", red, blue)); } }
     /// Удаляет постоянный визуальный пикап по его ID.
     pub fn remove_visual_pickup(&self, id: i32) {
-        self.raw(&format!("remove_visual_pickup {}", id));
+        if validate_visual_id(id, MAX_VISUAL_PICKUPS, "pickup_id").is_ok() { self.raw(&format!("remove_visual_pickup {}", id)); }
     }
     /// Создаёт постоянного визуального ти (ID 0..63) в OnSnap.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_visual_tee(&self, id: i32, x: f32, y: f32, skin: &str, body: i32, feet: i32, freeze: i32) {
+        if validate_visual_id(id, MAX_VISUAL_TEES, "tee_id").is_err() || validate_coords(x, y).is_err() { return; }
         self.raw(&format!(
             "spawn_visual_tee {} {:.1} {:.1} \"{}\" {} {} {}",
             id, x, y, skin.replace('"', ""), body, feet, freeze
@@ -1346,7 +1383,7 @@ impl ServerApi {
     }
     /// Удаляет постоянного визуального ти по его ID.
     pub fn remove_visual_tee(&self, id: i32) {
-        self.raw(&format!("remove_visual_tee {}", id));
+        if validate_visual_id(id, MAX_VISUAL_TEES, "tee_id").is_ok() { self.raw(&format!("remove_visual_tee {}", id)); }
     }
     /// Удаляет всех постоянных визуальных ти этого плагина.
     pub fn clear_visual_tees(&self) {
@@ -1354,7 +1391,8 @@ impl ServerApi {
     }
     /// Создаёт постоянный векторный лазерный текст в OnSnap (ID 0..31, 0 FX/с).
     pub fn spawn_visual_text(&self, id: i32, x: f32, y: f32, scale: f32, kind: i32, text: &str) {
-        let clean = text.replace('"', "");
+        if validate_visual_id(id, MAX_VISUAL_TEXTS, "text_id").is_err() || validate_coords(x, y).is_err() || !scale.is_finite() || !(0.1..=20.0).contains(&scale) { return; }
+        let clean = sanitize_quoted_text(text);
         self.raw(&format!(
             "spawn_visual_text {} {:.1} {:.1} {:.2} {} \"{}\"",
             id, x, y, scale, kind, clean
@@ -1362,11 +1400,32 @@ impl ServerApi {
     }
     /// Удаляет постоянный векторный текст по его ID.
     pub fn remove_visual_text(&self, id: i32) {
-        self.raw(&format!("remove_visual_text {}", id));
+        if validate_visual_id(id, MAX_VISUAL_TEXTS, "text_id").is_ok() { self.raw(&format!("remove_visual_text {}", id)); }
     }
     /// Удаляет все постоянные векторные тексты этого плагина.
     pub fn clear_visual_texts(&self) {
         self.raw("clear_visual_texts");
+    }
+
+    /// Очищает остаточное состояние слота CID и прежнего владельца при новом подключении.
+    pub(crate) fn reset_client_slot(&mut self, cid: i32, new_player: &str) {
+        if cid >= 0 {
+            if let Some(prev) = self.names.remove(&cid)
+                && prev != new_player
+            {
+                self.online.remove(&prev);
+                self.cids.remove(&prev);
+                self.player_cids.remove(&prev);
+                self.ips.remove(&prev);
+                self.player_ips.remove(&prev);
+                self.accounts.remove(&prev);
+                self.authed_accounts.remove(&prev);
+            }
+            self.states.remove(&cid);
+            self.best_clients.remove(&cid);
+        }
+        self.accounts.remove(new_player);
+        self.authed_accounts.remove(new_player);
     }
 
     fn parse_event(&mut self, body: &str) -> Option<Event> {
@@ -1435,9 +1494,10 @@ impl ServerApi {
         }
         if let Some(rest) = body.strip_prefix("JOIN|") {
             let p: Vec<&str> = rest.splitn(3, '|').collect();
-            let player = p.first()?.to_string();
+            let player = unescape_ipc_field(p.first()?);
             let cid = p.get(1).and_then(|s| s.parse().ok()).unwrap_or(-1);
             let ip = p.get(2).copied().unwrap_or("").to_string();
+            self.reset_client_slot(cid, &player);
             self.online.insert(player.clone());
             if cid >= 0 {
                 self.cids.insert(player.clone(), cid);
@@ -1451,7 +1511,7 @@ impl ServerApi {
             return Some(Event::Join { player });
         }
         if let Some(nick) = body.strip_prefix("LEAVE|") {
-            let player = nick.to_string();
+            let player = unescape_ipc_field(nick);
             self.online.remove(&player);
             let cid_opt = self.cids.remove(&player).or_else(|| self.player_cids.remove(&player));
             self.player_cids.remove(&player);
@@ -1468,7 +1528,9 @@ impl ServerApi {
             return Some(Event::Leave { player });
         }
         if let Some(rest) = body.strip_prefix("RENAME|") {
-            let (old, new) = rest.split_once('|')?;
+            let (old_raw, new_raw) = rest.split_once('|')?;
+            let (old_s, new_s) = (unescape_ipc_field(old_raw), unescape_ipc_field(new_raw));
+            let (old, new) = (old_s.as_str(), new_s.as_str());
             self.online.remove(old);
             self.online.insert(new.to_string());
             if let Some(cid) = self.cids.remove(old).or_else(|| self.player_cids.remove(old)) {
@@ -1497,21 +1559,21 @@ impl ServerApi {
             let p: Vec<&str> = rest.splitn(3, '|').collect();
             return Some(Event::Chat {
                 team: p.first()?.parse().ok()?,
-                player: (*p.get(1)?).to_string(),
-                message: (*p.get(2)?).to_string(),
+                player: unescape_ipc_field(p.get(1)?),
+                message: unescape_ipc_field(p.get(2)?),
             });
         }
         if let Some(rest) = body.strip_prefix("BESTCLIENT|") {
             let (cid_s, ver) = rest.split_once('|')?;
             let cid = cid_s.parse().ok()?;
             self.best_clients.insert(cid);
-            return Some(Event::BestClient { cid, version: ver.to_string() });
+            return Some(Event::BestClient { cid, version: unescape_ipc_field(ver) });
         }
         if let Some(rest) = body.strip_prefix("AUTH|") {
             let p: Vec<&str> = rest.splitn(3, '|').collect();
             let cid = p.first()?.parse().ok()?;
-            let player = (*p.get(1)?).to_string();
-            let account = (*p.get(2)?).to_string();
+            let player = unescape_ipc_field(p.get(1)?);
+            let account = unescape_ipc_field(p.get(2)?);
             self.accounts.insert(player.clone(), account.clone());
             self.authed_accounts.insert(player.clone(), account.clone());
             return Some(Event::Auth {
@@ -1692,9 +1754,10 @@ impl ServerApi {
 /// Объявляет точку входа плагина DDNetPR, регистрацию, конфигурацию, состояние и цикл событий.
 #[macro_export]
 macro_rules! plugin {
-    (name: $n:expr, desc: $d:expr, $(admin: $a:expr,)? $(priority: $p:expr,)? $(cmds: [ $( ($c:expr, $ca:expr, $cd:expr) ),* $(,)? ],)? handler: $h:expr $(,)?) => {
+    (name: $n:expr, desc: $d:expr, $(admin: $a:expr,)? $(perms: [ $($perm:expr),* $(,)? ],)? $(priority: $p:expr,)? $(cmds: [ $( ($c:expr, $ca:expr, $cd:expr) ),* $(,)? ],)? handler: $h:expr $(,)?) => {
         fn main() {
             let mut api = $crate::ServerApi::new();
+            $( api.set_manifest("11.0.0", &[$($perm),*]); )?
             let mut _adm = false; $( _adm = $a; )?
             if _adm { api.register_admin_plugin($n, $d); } else { api.register_plugin($n, $d); }
             $( api.set_priority($p); )? $( $( api.register_cmd($c, $ca, $cd); )* )?
@@ -1741,4 +1804,146 @@ macro_rules! plugin {
             $api.run(move |$api, $ev| $b);
         }
     };
+}
+
+/// Очищает имя карты от кавычек, переносов строк и управляющих символов.
+pub fn sanitize_map_name(map: &str) -> Option<String> {
+    let clean: String = map
+        .chars()
+        .filter(|&c| !c.is_control() && c != '"' && c != ';')
+        .collect();
+    let trimmed = clean.trim();
+    if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_map_name;
+
+    #[test]
+    fn test_sanitize_map_name_cases() {
+        // Обычное имя карты и имя с подпапкой
+        assert_eq!(sanitize_map_name("Sunny Side Up").as_deref(), Some("Sunny Side Up"));
+        assert_eq!(sanitize_map_name("  types/novice/Map1  ").as_deref(), Some("types/novice/Map1"));
+        // Пустое имя и пробелы отклоняются
+        assert_eq!(sanitize_map_name(""), None);
+        assert_eq!(sanitize_map_name("   	
+
+  "), None);
+        // Кавычки, переносы строк и точка с запятой вырезаются
+        let dirty = format!("Chill{}Block5
+;sv_gravity 0
+", '"');
+        assert_eq!(sanitize_map_name(&dirty).as_deref(), Some("ChillBlock5sv_gravity 0"));
+    }
+}
+
+#[cfg(test)]
+mod permission_tests {
+    use super::*;
+
+#[test]
+    fn test_sdk_ipc_escaping_and_boundary_strings() {
+        assert_eq!(unescape_ipc_field("NormalName"), "NormalName");
+        assert_eq!(unescape_ipc_field("Evil%7CAdmin%251"), "Evil|Admin%1");
+        assert_eq!(sanitize_quoted_text("Hi \"all\"\nban 0\r\0;cmd"), "Hi 'all'ban 0;cmd");
+        assert_eq!(sanitize_ipc_key("role_acc:user|evil=owner\n"), "role_acc:userevilowner");
+
+        let mut api = ServerApi::new();
+        let ev = api.parse_event("CHAT|0|Evil%7CAdmin|hello%7Cworld").unwrap();
+        match ev {
+            Event::Chat { team, player, message } => {
+                assert_eq!(team, 0);
+                assert_eq!(player, "Evil|Admin");
+                assert_eq!(message, "hello|world");
+            }
+            _ => panic!("expected Chat"),
+        }
+        let auth_ev = api.parse_event("AUTH|2|Nick%7C1|Acc%7C2").unwrap();
+        match auth_ev {
+            Event::Auth { cid, player, account } => {
+                assert_eq!(cid, 2);
+                assert_eq!(player, "Nick|1");
+                assert_eq!(account, "Acc|2");
+            }
+            _ => panic!("expected Auth"),
+        }
+    }
+
+    #[test]
+    fn test_sdk_cid_reuse_and_leave_cleanup() {
+        let mut api = ServerApi::new();
+        api.parse_event("JOIN|Alice|2|10.0.0.1");
+        api.parse_event("AUTH|2|Alice|AdminAcc");
+        api.best_clients.insert(2);
+        api.parse_event("STATE|2:100:200:0:0:0:0:0:0");
+        assert_eq!(api.authed_accounts.get("Alice").map(String::as_str), Some("AdminAcc"));
+
+        // Повторное использование CID 2 новым игроком без предварительного LEAVE|
+        api.parse_event("JOIN|Bob|2|10.0.0.2");
+        assert!(!api.online.contains("Alice"));
+        assert!(!api.authed_accounts.contains_key("Alice"));
+        assert!(!api.authed_accounts.contains_key("Bob"));
+        assert!(!api.best_clients.contains(&2));
+        assert!(!api.states.contains_key(&2));
+        assert_eq!(api.names.get(&2).map(String::as_str), Some("Bob"));
+
+        // После LEAVE|Bob повторный вход Alice без /login не наследует старый аккаунт
+        api.parse_event("LEAVE|Bob");
+        assert!(!api.online.contains("Bob"));
+        assert!(!api.names.contains_key(&2));
+        api.parse_event("JOIN|Alice|2|10.0.0.3");
+        assert!(!api.authed_accounts.contains_key("Alice"));
+    }
+
+    #[test]
+    fn test_sdk_argument_bounds_against_core() {
+        assert!(PlayerId(0).is_valid() && PlayerId(63).is_valid());
+        assert!(!PlayerId(-1).is_valid() && !PlayerId(64).is_valid());
+        assert!(validate_sound_cid(-1).is_ok() && validate_sound_cid(64).is_err());
+        assert!(validate_weapon(0).is_ok() && validate_weapon(5).is_ok());
+        assert!(validate_weapon(-1).is_err() && validate_weapon(6).is_err());
+        assert!(validate_ammo(-1).is_ok() && validate_ammo(0).is_ok() && validate_ammo(-2).is_err());
+        assert!(validate_visual_id(127, MAX_VISUAL_PICKUPS, "pickup_id").is_ok());
+        assert!(validate_visual_id(128, MAX_VISUAL_PICKUPS, "pickup_id").is_err());
+        assert!(validate_visual_id(-1, MAX_VISUAL_LASERS, "laser_id").is_err());
+        assert!(validate_visual_id(63, MAX_VISUAL_TEES, "tee_id").is_ok());
+        assert!(validate_visual_id(64, MAX_VISUAL_TEES, "tee_id").is_err());
+        assert!(validate_visual_id(31, MAX_VISUAL_TEXTS, "text_id").is_ok());
+        assert!(validate_visual_id(32, MAX_VISUAL_TEXTS, "text_id").is_err());
+        let api = ServerApi::new();
+        assert!(api.set_hud_line(PlayerId(0), 0, "ok").is_ok());
+        assert!(api.set_hud_line(PlayerId(0), 4, "ok").is_ok());
+        assert!(api.set_hud_line(PlayerId(0), 5, "bad").is_err());
+        assert!(validate_coords(0.0, 32768.0).is_ok());
+        assert!(validate_coords(f32::NAN, 0.0).is_err() && validate_coords(40000.0, 0.0).is_err());
+        assert!(validate_speed(-500.0, 500.0).is_ok());
+        assert!(validate_speed(f32::INFINITY, 0.0).is_err() && validate_speed(501.0, 0.0).is_err());
+        assert!(api.spawn_projectile(1, PlayerId(64), Vec2::new(0.0, 0.0), Vec2::new(0.0, 0.0), 0.5, 1000).is_err());
+        assert!(validate_score(-1_000_000).is_ok() && validate_score(1_000_001).is_err());
+        assert!(validate_freeze_secs(0).is_ok() && validate_freeze_secs(3600).is_ok());
+        assert!(validate_freeze_secs(-1).is_err() && validate_freeze_secs(3601).is_err());
+        assert!(validate_gamemode(0).is_ok() && validate_gamemode(3).is_ok());
+        assert!(validate_gamemode(-1).is_err() && validate_gamemode(4).is_err());
+    }
+
+    #[test]
+    fn test_sdk_manifest_and_staff_roles() {
+        let mut api = ServerApi::new();
+        assert!(!api.has_permission("moderation"));
+        api.set_manifest("11.0.0", &["moderation", "player_control"]);
+        assert!(api.has_permission("moderation"));
+        assert!(api.has_permission("player_control"));
+        assert!(!api.has_permission("world_mode"));
+
+        api.accounts.insert("Masua".to_string(), "Tinker1337".to_string());
+        api.roles.insert("Tinker1337".to_string(), "owner".to_string());
+        api.accounts.insert("Guest".to_string(), "GuestAcc".to_string());
+        api.roles.insert("GuestAcc".to_string(), "user".to_string());
+
+        assert!(api.has_role("Masua", "owner"));
+        assert!(api.is_staff("Masua"));
+        assert!(!api.is_staff("Guest"));
+        assert!(!api.is_staff("UnauthedPlayer"));
+    }
 }
