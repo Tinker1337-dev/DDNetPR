@@ -599,7 +599,10 @@ impl ServerApi {
     /// ```
     pub fn whisper(&self, player: &str, msg: &str) {
         // Ищем актуальный CID игрока по нику для отправки через команду ядра plugin_chat_to
-        if let Some((&cid, _)) = self.names.iter().find(|(_, nick)| nick.as_str() == player) {
+        let cid_opt = self.names.iter().find(|(_, nick)| nick.as_str() == player).map(|(&c, _)| c)
+            .or_else(|| self.cids.get(player).copied())
+            .or_else(|| self.player_cids.get(player).copied());
+        if let Some(cid) = cid_opt {
             self.whisper_cid(cid, msg);
         }
     }
@@ -1589,6 +1592,13 @@ impl ServerApi {
             let cid = p.first()?.parse().ok()?;
             let player = unescape_ipc_field(p.get(1)?);
             let account = unescape_ipc_field(p.get(2)?);
+            // Восстанавливаем привязку CID <-> ник при авторизации (в т.ч. после рестарта менеджера)
+            if cid >= 0 {
+                self.online.insert(player.clone());
+                self.cids.insert(player.clone(), cid);
+                self.player_cids.insert(player.clone(), cid);
+                self.names.insert(cid, player.clone());
+            }
             self.accounts.insert(player.clone(), account.clone());
             self.authed_accounts.insert(player.clone(), account.clone());
             return Some(Event::Auth {
@@ -1626,6 +1636,13 @@ impl ServerApi {
             let off = if p.len() >= 7 && p[1].parse::<f32>().is_err() { 1 } else { 0 };
             if p.len() >= 6 + off {
                 let cid = p[0].parse().ok()?;
+                if off == 1 && cid >= 0 && !p[1].is_empty() {
+                    let nick = unescape_ipc_field(p[1]);
+                    self.online.insert(nick.clone());
+                    self.cids.insert(nick.clone(), cid);
+                    self.player_cids.insert(nick.clone(), cid);
+                    self.names.insert(cid, nick);
+                }
                 let pos = PlayerPos {
                     x: p[1 + off].parse().ok()?,
                     y: p[2 + off].parse().ok()?,
@@ -1992,5 +2009,13 @@ mod permission_tests {
         if let Some(Event::DbList { items, .. }) = api.parse_event("DB_LIST|r1|a%3Bb%3Dc=x%7Cy%25z") {
             assert_eq!(items, vec![("a;b=c".into(), "x|y%z".into())]);
         } else { panic!(); }
+    }
+
+    #[test]
+    fn test_whisper_works_after_auth_and_state_without_join() {
+        let mut api = ServerApi::new();
+        let _ = api.parse_event("AUTH|0|Tinker1337|Masua");
+        assert_eq!(api.names.get(&0).map(String::as_str), Some("Tinker1337"));
+        api.whisper("Tinker1337", "Вход выполнен!");
     }
 }
