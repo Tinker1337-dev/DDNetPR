@@ -66,7 +66,7 @@ fn main() {
         Event::Chat { team, player, message } => {
             let msg = message.trim();
             if !msg.starts_with('!') && !msg.starts_with('/') {
-                if team == 0 && has_heart_token(msg) {
+                if team == -2 && has_heart_token(msg) {
                     let ready = heart_cd.get(&player).is_none_or(|&t| now_sec.saturating_sub(t) >= 3);
                     if ready {
                         heart_cd.insert(player.clone(), now_sec);
@@ -81,7 +81,7 @@ fn main() {
                         }
                     }
                 }
-                if team == 0 && !msg.is_empty() {
+                if team == -2 && !msg.is_empty() {
                     last_chatter = Some(player);
                 }
                 return;
