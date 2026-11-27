@@ -9,11 +9,12 @@ plugin_config! {
         pub block_map: String = "ChillBlock5".into(),
         pub fng_map: String = "ctf5_fngores".into(),
         pub tdm_map: String = "CBattleGores".into(),
+        pub cs_map: String = "de_dust2".into(),
     }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Mode { Race, Block, Fng, Tdm }
+enum Mode { Race, Block, Fng, Tdm, Cs }
 
 impl Mode {
     fn parse(s: &str) -> Option<Self> {
@@ -22,17 +23,19 @@ impl Mode {
             "block" | "ffa" | "dm" => Some(Self::Block),
             "fng" | "openfng" => Some(Self::Fng),
             "tdm" | "teams" => Some(Self::Tdm),
+            "cs" | "cs2" | "bomb" => Some(Self::Cs),
             _ => None,
         }
     }
-    fn code(self) -> i32 { match self { Self::Race => 0, Self::Block => 1, Self::Tdm => 2, Self::Fng => 3 } }
-    fn is_team(self) -> bool { matches!(self, Self::Fng | Self::Tdm) }
+    fn code(self) -> i32 { match self { Self::Race => 0, Self::Block => 1, Self::Tdm | Self::Cs => 2, Self::Fng => 3 } }
+    fn is_team(self) -> bool { matches!(self, Self::Fng | Self::Tdm | Self::Cs) }
     fn map_name(self, cfg: &GamemodeConfig) -> &str {
         match self {
             Self::Race => cfg.race_map.trim(),
             Self::Block => cfg.block_map.trim(),
             Self::Fng => cfg.fng_map.trim(),
             Self::Tdm => cfg.tdm_map.trim(),
+            Self::Cs => cfg.cs_map.trim(),
         }
     }
     fn title(self) -> &'static str {
@@ -41,6 +44,7 @@ impl Mode {
             Self::Block => "Block (очки в Tab)",
             Self::Fng => "FNG (Red vs Blue + очки)",
             Self::Tdm => "TDM (Red vs Blue + очки)",
+            Self::Cs => "CS 2D (T vs CT | Закуп & Бомба C4)",
         }
     }
 }
@@ -73,6 +77,7 @@ fn reset_round(api: &ServerApi, mode: Mode, scores: &mut HashMap<String, i32>, t
         Mode::Block => { api.set_freeze_autokill(10); api.set_laser_freeze(0); api.set_hammer_team_unfreeze(false); api.set_fng_weapons(false); }
         Mode::Fng => { api.set_freeze_autokill(5); api.set_laser_freeze(5); api.set_hammer_team_unfreeze(true); api.set_fng_weapons(true); }
         Mode::Tdm => { api.set_freeze_autokill(0); api.set_laser_freeze(4); api.set_hammer_team_unfreeze(true); api.set_fng_weapons(false); }
+        Mode::Cs => { api.set_freeze_autokill(0); api.set_laser_freeze(0); api.set_hammer_team_unfreeze(false); api.set_fng_weapons(false); }
     }
     let mut pls: Vec<(String, i32)> = api.cids.iter().map(|(n, &c)| (n.clone(), c)).collect();
     pls.sort_by_key(|(_, c)| *c);
@@ -114,7 +119,7 @@ ddnet_sdk::plugin! {
             }
             Event::Rename { old, new_name, .. } => { on_player_rename(&old, &new_name, &mut scores, &mut teams, &mut cids_map); }
             Event::Leave { player } => { on_player_leave(&player, &mut scores, &mut teams, &mut cids_map); }
-            Event::Kill { killer, victim, weapon } if mode != Mode::Race && !killer.is_empty() && killer != victim => {
+            Event::Kill { killer, victim, weapon } if mode != Mode::Race && mode != Mode::Cs && !killer.is_empty() && killer != victim => {
                 let kt = *teams.get(&killer).unwrap_or(&-1);
                 let vt = *teams.get(&victim).unwrap_or(&-1);
                 if mode.is_team() && kt >= 0 && kt == vt { return; }
@@ -154,8 +159,8 @@ ddnet_sdk::plugin! {
                             api.say(&format!("[Режим] {} включил: {}!", player, mode.title()));
                         }
                     }
-                    else { api.whisper(&player, "Доступно: !mode race | block | fng | tdm [nomap]"); }
-                } else if cmd.eq_ignore_ascii_case("!team") && mode.is_team() {
+                    else { api.whisper(&player, "Доступно: !mode race | block | fng | tdm | cs [nomap]"); }
+                } else if cmd.eq_ignore_ascii_case("!team") && mode.is_team() && mode != Mode::Cs {
                     let Some(&cid) = api.cids.get(&player) else { return; };
                     let t = match p.get(1).map(|s| s.to_lowercase()).as_deref() { Some("red" | "r" | "0") => Some(0), Some("blue" | "b" | "1") => Some(1), Some("spec" | "-1") => Some(-1), _ => None };
                     if let Some(nt) = t { if nt >= 0 { teams.insert(player.clone(), nt); } else { teams.remove(&player); } api.set_player_team(cid, nt); api.whisper(&player, "Команда обновлена."); }
