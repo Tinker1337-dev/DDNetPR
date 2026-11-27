@@ -72,11 +72,11 @@ fn main() {
                         heart_cd.insert(player.clone(), now_sec);
                         // Отправляем нативный эмотикон сердечек (EMOTICON_HEARTS = 2) отправителю и адресату
                         if let Some(&scid) = api.cids.get(&player).or_else(|| api.player_cids.get(&player)) {
-                            api.raw(&format!("emote {} 2", scid));
+                            api.raw(&format!("plugin_emote {} 2", scid));
                         }
                         if let Some(target) = resolve_heart_target(&player, msg, last_chatter.as_deref(), api) {
                             if let Some(&tcid) = api.cids.get(&target).or_else(|| api.player_cids.get(&target)) {
-                                api.raw(&format!("emote {} 2", tcid));
+                                api.raw(&format!("plugin_emote {} 2", tcid));
                             }
                         }
                     }

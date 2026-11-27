@@ -1,3 +1,23 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 0c62fa5f3..5508339da 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -3162,6 +3162,7 @@ if(SERVER)
+     captcha.h
+     ddnetpp/chat_commands.cpp
+     ddnetpp/chat_commands.h
++    ddnetpp/login_ratelimit.h
+     ddnetpp/db/accounts.cpp
+     ddnetpp/db/accounts.h
+     ddnetpp/db/bans.cpp
+@@ -3700,6 +3701,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
+     csv_test.cpp
+     datafile_test.cpp
+     dbg_test.cpp
++    ddnetpp_login_ratelimit_test.cpp
+     ddnetpp_str_test.cpp
+     editor_test.cpp
+     fs_test.cpp
 diff --git a/src/engine/server/server.cpp b/src/engine/server/server.cpp
 index 87b347c23..a922b389f 100644
 --- a/src/engine/server/server.cpp
@@ -802,7 +822,7 @@ index 00171b19a..143a83254 100644
  	if(m_Type == WEAPON_SHOTGUN)
  	{
 diff --git a/src/game/server/gamecontext.cpp b/src/game/server/gamecontext.cpp
-index eacb3d09e..71978d43a 100644
+index eacb3d09e..202f08e7f 100644
 --- a/src/game/server/gamecontext.cpp
 +++ b/src/game/server/gamecontext.cpp
 @@ -1,3 +1,4 @@
@@ -2438,7 +2458,7 @@ index eacb3d09e..71978d43a 100644
  
  		// copy option
  		int Len = str_length(pSrc->m_aCommand);
-@@ -4094,6 +5383,88 @@ void CGameContext::OnConsoleInit()
+@@ -4094,6 +5383,89 @@ void CGameContext::OnConsoleInit()
  	Console()->Register("mod_alert", "v[id] r[message]", CFGFLAG_SERVER, ConModAlert, this, "Send a moderator alert message to player");
  	Console()->Register("broadcast", "r[message]", CFGFLAG_SERVER, ConBroadcast, this, "Broadcast message");
  	Console()->Register("say", "r[message]", CFGFLAG_SERVER, ConSay, this, "Say in chat");
@@ -2462,6 +2482,7 @@ index eacb3d09e..71978d43a 100644
 +	Console()->Register("kill_by", "iii", CFGFLAG_SERVER, ConKillBy, this, "Kill player credited to killer and weapon");
 +	Console()->Register("set_stats", "iii", CFGFLAG_SERVER, ConSetStats, this, "Set player health and armor");
 +	Console()->Register("emote", "ii", CFGFLAG_SERVER, ConEmote, this, "Send emoticon above player");
++	Console()->Register("plugin_emote", "ii", CFGFLAG_SERVER, ConEmote, this, "Send emoticon above player from plugin");
 +	Console()->Register("set_weapon_lock", "ii", CFGFLAG_SERVER, ConSetWeaponLock, this, "Lock active weapon switching");
 +	Console()->Register("reg_chat_cmd", "sss", CFGFLAG_SERVER, ConRegChatCmd, this, "Register chat autocomplete command");
 +	Console()->Register("set_clan", "ir", CFGFLAG_SERVER, ConSetClan, this, "Set player clan tag");
@@ -2527,7 +2548,7 @@ index eacb3d09e..71978d43a 100644
  	Console()->Register("set_team", "v[id] i[team-id] ?i[delay in minutes]", CFGFLAG_SERVER, ConSetTeam, this, "Set team for a player (spectators = -1, game = 0)");
  	Console()->Register("hot_reload", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConHotReload, this, "Reload the map while preserving the state of tees and teams");
  	Console()->Register("reload_censorlist", "", CFGFLAG_SERVER, ConReloadCensorlist, this, "Reload the censorlist");
-@@ -4127,7 +5498,7 @@ void CGameContext::RegisterDDRaceCommands()
+@@ -4127,7 +5499,7 @@ void CGameContext::RegisterDDRaceCommands()
  	Console()->Register("totelecp", "i[number]", CFGFLAG_SERVER | CMDFLAG_TEST, ConToCheckTeleporter, this, "Teleports you to checkpoint teleporter i");
  	Console()->Register("tele", "?v[id] ?v[id]", CFGFLAG_SERVER | CMDFLAG_TEST, ConTeleport, this, "Teleports player i (or you) to player i (or you to where you look at)");
  	Console()->Register("addweapon", "i[weapon-id]", CFGFLAG_SERVER | CMDFLAG_TEST, ConAddWeapon, this, "Gives weapon with id i to you (all = -1, hammer = 0, gun = 1, shotgun = 2, grenade = 3, laser = 4, ninja = 5)");
@@ -2536,7 +2557,7 @@ index eacb3d09e..71978d43a 100644
  	Console()->Register("shotgun", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConShotgun, this, "Gives a shotgun to you");
  	Console()->Register("grenade", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConGrenade, this, "Gives a grenade launcher to you");
  	Console()->Register("laser", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConLaser, this, "Gives a laser to you");
-@@ -4888,6 +6259,92 @@ void CGameContext::OnSnap(int ClientId, bool GlobalSnap, bool RecordingDemo)
+@@ -4888,6 +6260,92 @@ void CGameContext::OnSnap(int ClientId, bool GlobalSnap, bool RecordingDemo)
  
  	m_World.Snap(ClientId);
  
