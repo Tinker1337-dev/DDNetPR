@@ -1115,7 +1115,7 @@ impl ServerApi {
             }
 
             let mut ev_id: Option<u64> = None;
-            let body = if let Some(rest) = line.strip_prefix("EV|") {
+            let body = if let Some(rest) = line.strip_prefix("SYNC|").or_else(|| line.strip_prefix("EV|")) {
                 if let Some((id_s, tail)) = rest.split_once('|') {
                     ev_id = id_s.parse::<u64>().ok();
                     tail
@@ -2017,5 +2017,20 @@ mod permission_tests {
         let _ = api.parse_event("AUTH|0|Tinker1337|Masua");
         assert_eq!(api.names.get(&0).map(String::as_str), Some("Tinker1337"));
         api.whisper("Tinker1337", "Вход выполнен!");
+    }
+
+    #[test]
+    fn test_sync_prefix_chat_parsing() {
+        let mut api = ServerApi::new();
+        let raw = "SYNC|42|CHAT|-2|Tinker1337|!reboot 3";
+        let tail = raw.strip_prefix("SYNC|").and_then(|r| r.split_once('|')).map(|(_, t)| t).unwrap();
+        match api.parse_event(tail) {
+            Some(Event::Chat { team, player, message }) => {
+                assert_eq!(team, -2);
+                assert_eq!(player, "Tinker1337");
+                assert_eq!(message, "!reboot 3");
+            }
+            other => panic!("ожидался Chat, получено: {:?}", other),
+        }
     }
 }
