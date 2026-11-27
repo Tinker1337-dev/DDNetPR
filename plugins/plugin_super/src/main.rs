@@ -97,7 +97,7 @@ fn can_exec_super_cmd(api: &ServerApi, player: &str, cmd: &str) -> bool {
 
 fn main() {
     let mut api = ServerApi::new();
-    api.set_manifest("11.0.0", &["player_control", "server_control"]);
+    api.set_manifest("11.0.0", &["player_control", "map_control"]);
     api.register_cmd("reload", "", "Перезагрузить текущую карту (Staff/Admin)");
     api.register_admin_plugin("super", "Режим бога: !super (!god), !tp, !bring, !vanish");
     let (mut supers, mut vanishes, mut fire_held, mut hook_held, mut active_wpn, mut fly_tick) =
