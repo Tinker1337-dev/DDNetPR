@@ -5,7 +5,7 @@ plugin_config! {
     pub struct GamemodeConfig {
         pub default_mode: String = "race".into(),
         pub score_limit: i32 = 50,
-        pub race_map: String = "Sunny Side Up".into(),
+        pub race_map: String = "BlmapChill".into(),
         pub block_map: String = "ChillBlock5".into(),
         pub fng_map: String = "ctf5_fngores".into(),
         pub tdm_map: String = "CBattleGores".into(),

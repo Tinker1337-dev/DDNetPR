@@ -1,23 +1,3 @@
-diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 0c62fa5f3..5508339da 100644
---- a/CMakeLists.txt
-+++ b/CMakeLists.txt
-@@ -3162,6 +3162,7 @@ if(SERVER)
-     captcha.h
-     ddnetpp/chat_commands.cpp
-     ddnetpp/chat_commands.h
-+    ddnetpp/login_ratelimit.h
-     ddnetpp/db/accounts.cpp
-     ddnetpp/db/accounts.h
-     ddnetpp/db/bans.cpp
-@@ -3700,6 +3701,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
-     csv_test.cpp
-     datafile_test.cpp
-     dbg_test.cpp
-+    ddnetpp_login_ratelimit_test.cpp
-     ddnetpp_str_test.cpp
-     editor_test.cpp
-     fs_test.cpp
 diff --git a/src/engine/server/server.cpp b/src/engine/server/server.cpp
 index 87b347c23..a922b389f 100644
 --- a/src/engine/server/server.cpp
@@ -306,7 +286,7 @@ index 6afe8d9af..e3742ed46 100644
  	if(Banned > 0)
  	{
 diff --git a/src/game/server/entities/character.cpp b/src/game/server/entities/character.cpp
-index 552fe95b3..5b594824f 100644
+index 552fe95b3..867f159a7 100644
 --- a/src/game/server/entities/character.cpp
 +++ b/src/game/server/entities/character.cpp
 @@ -86,6 +86,8 @@ bool CCharacter::Spawn(CPlayer *pPlayer, vec2 Pos)
@@ -401,7 +381,15 @@ index 552fe95b3..5b594824f 100644
  			Antibot()->OnHammerHit(m_pPlayer->GetCid(), pTarget->GetPlayer()->GetCid());
  
  			Hits++;
-@@ -810,6 +842,16 @@ void CCharacter::OnDirectInput(const CNetObj_PlayerInput *pNewInput)
+@@ -777,6 +809,7 @@ void CCharacter::OnPredictedInput(const CNetObj_PlayerInput *pNewInput)
+ 
+ 	// copy new input
+ 	mem_copy(&m_Input, pNewInput, sizeof(m_Input));
++	if(m_PluginDeepFreeze) { m_Core.m_DeepFrozen = true; m_Core.m_LiveFrozen = true; m_Core.m_Vel = vec2(0, 0); m_FreezeTime = 2; }
+ 
+ 	// reset target due to spectator mode input not being in aim space
+ 	if(pNewInput->m_PlayerFlags & PLAYERFLAG_SPEC_CAM)
+@@ -810,6 +843,16 @@ void CCharacter::OnDirectInput(const CNetObj_PlayerInput *pNewInput)
  		m_LatestInput.m_TargetY = -1;
  
  	Antibot()->OnDirectInput(m_pPlayer->GetCid());
@@ -410,7 +398,7 @@ index 552fe95b3..5b594824f 100644
 +		int FireNow = m_LatestInput.m_Fire & 1;
 +		int FirePrev = m_LatestPrevInput.m_Fire & 1;
 +		bool AimMoved = FireNow && (Server()->Tick() % 3 == 0) && (m_LatestInput.m_TargetX != m_LatestPrevInput.m_TargetX || m_LatestInput.m_TargetY != m_LatestPrevInput.m_TargetY);
-+		if(FireNow != FirePrev || m_LatestInput.m_Jump != m_LatestPrevInput.m_Jump || m_LatestInput.m_Hook != m_LatestPrevInput.m_Hook || AimMoved)
++		if(FireNow != FirePrev || m_LatestInput.m_Jump != m_LatestPrevInput.m_Jump || m_LatestInput.m_Hook != m_LatestPrevInput.m_Hook || m_LatestInput.m_Direction != m_LatestPrevInput.m_Direction || AimMoved)
 +		{
 +			log_info("input", "%d:%d:%d:%d:%d:%d:%d", m_pPlayer->GetCid(), FireNow, m_LatestInput.m_Jump, m_LatestInput.m_Hook, m_LatestInput.m_Direction, m_LatestInput.m_TargetX, m_LatestInput.m_TargetY);
 +		}
@@ -418,7 +406,7 @@ index 552fe95b3..5b594824f 100644
  
  	if(m_NumInputs > 1 && m_pPlayer->GetTeam() != TEAM_SPECTATORS)
  	{
-@@ -870,7 +912,16 @@ void CCharacter::PreTick()
+@@ -870,12 +913,23 @@ void CCharacter::PreTick()
  
  	Antibot()->OnCharacterTick(m_pPlayer->GetCid());
  
@@ -430,12 +418,19 @@ index 552fe95b3..5b594824f 100644
 +		m_Input.m_Fire = m_PluginForceFire ? 1 : 0;
 +	}
  	m_Core.m_Input = m_Input;
++	if(m_PluginDeepFreeze || (m_pPlayer && m_pPlayer->m_PluginForceDeepFreeze)) { m_Core.m_Input.m_Direction = 0; m_Core.m_Input.m_Jump = 0; m_Core.m_Input.m_Hook = 0; m_Core.m_DeepFrozen = true; m_Core.m_LiveFrozen = true; m_Core.m_Vel = vec2(0, 0); m_FreezeTime = 2; }
 +	if(m_PluginGravity > -100.0f)
 +		m_Core.m_Vel.y += (m_PluginGravity - m_Core.m_Tuning.m_Gravity);
  	m_Core.Tick(true, !g_Config.m_SvNoWeakHook);
  }
  
-@@ -908,6 +959,18 @@ void CCharacter::Tick()
+ void CCharacter::Tick()
+ {
++	if(m_PluginDeepFreeze || (m_pPlayer && m_pPlayer->m_PluginForceDeepFreeze)) { m_Input.m_Direction = 0; m_Input.m_Jump = 0; m_Input.m_Hook = 0; m_Core.m_Input.m_Direction = 0; m_Core.m_Input.m_Jump = 0; m_Core.m_Input.m_Hook = 0; m_Core.m_DeepFrozen = true; m_Core.m_LiveFrozen = true; m_Core.m_Vel = vec2(0, 0); m_FreezeTime = 2; }
+ 	if(g_Config.m_SvNoWeakHook)
+ 	{
+ 		if(m_Paused)
+@@ -908,6 +962,18 @@ void CCharacter::Tick()
  		}
  	}
  
@@ -454,7 +449,7 @@ index 552fe95b3..5b594824f 100644
  	// Previnput
  	m_PrevInput = m_Input;
  
-@@ -933,7 +996,23 @@ void CCharacter::TickDeferred()
+@@ -933,7 +999,23 @@ void CCharacter::TickDeferred()
  	bool StuckBefore = Collision()->TestBox(m_Core.m_Pos, CCharacterCore::PhysicalSizeVec2());
  
  	m_Core.m_Id = m_pPlayer->GetCid();
@@ -479,7 +474,7 @@ index 552fe95b3..5b594824f 100644
  	bool StuckAfterMove = Collision()->TestBox(m_Core.m_Pos, CCharacterCore::PhysicalSizeVec2());
  	m_Core.Quantize();
  	bool StuckAfterQuant = Collision()->TestBox(m_Core.m_Pos, CCharacterCore::PhysicalSizeVec2());
-@@ -1077,6 +1156,7 @@ void CCharacter::StopRecording()
+@@ -1077,6 +1159,7 @@ void CCharacter::StopRecording()
  
  void CCharacter::Die(int Killer, int Weapon, bool SendKillMsg, bool FngScore)
  {
@@ -487,7 +482,7 @@ index 552fe95b3..5b594824f 100644
  	// ddnet-insta death handler
  	GameServer()->m_pController->OnCharacterDeathImpl(this, Killer, Weapon, SendKillMsg);
  
-@@ -1090,14 +1170,18 @@ bool CCharacter::TakeDamage(vec2 Force, int Dmg, int From, int Weapon)
+@@ -1090,14 +1173,18 @@ bool CCharacter::TakeDamage(vec2 Force, int Dmg, int From, int Weapon)
  	// ddnet-insta
  	if(GameServer()->m_pController->OnCharacterTakeDamage(Force, Dmg, From, Weapon, *this))
  		return false;
@@ -508,7 +503,7 @@ index 552fe95b3..5b594824f 100644
  
  	return true;
  }
-@@ -1296,6 +1380,8 @@ bool CCharacter::CanSnapCharacter(int SnappingClient)
+@@ -1296,6 +1383,8 @@ bool CCharacter::CanSnapCharacter(int SnappingClient)
  
  	CCharacter *pSnapChar = GameServer()->GetPlayerChar(SnappingClient);
  	CPlayer *pSnapPlayer = GameServer()->m_apPlayers[SnappingClient];
@@ -517,7 +512,7 @@ index 552fe95b3..5b594824f 100644
  
  	if(pSnapPlayer->GetTeam() == TEAM_SPECTATORS || pSnapPlayer->IsPaused())
  	{
-@@ -1422,7 +1508,7 @@ void CCharacter::Snap(int SnappingClient)
+@@ -1422,7 +1511,7 @@ void CCharacter::Snap(int SnappingClient)
  	if(m_Core.m_LiveFrozen)
  		DDNetCharacter.m_Flags |= CHARACTERFLAG_MOVEMENTS_DISABLED;
  
@@ -526,7 +521,7 @@ index 552fe95b3..5b594824f 100644
  	DDNetCharacter.m_Jumps = m_Core.m_Jumps;
  	DDNetCharacter.m_TeleCheckpoint = m_TeleCheckpoint;
  
-@@ -1582,10 +1668,83 @@ void CCharacter::HandleSkippableTiles(int Index)
+@@ -1582,10 +1671,83 @@ void CCharacter::HandleSkippableTiles(int Index)
  		}
  		else
  		{
@@ -611,7 +606,7 @@ index 552fe95b3..5b594824f 100644
  
  	if(GameLayerClipped(m_Pos))
  	{
-@@ -1726,6 +1885,18 @@ void CCharacter::HandleTiles(int Index)
+@@ -1726,6 +1888,18 @@ void CCharacter::HandleTiles(int Index)
  	int MapIndex = Index;
  	m_TileIndex = Collision()->GetTileIndex(MapIndex);
  	m_TileFIndex = Collision()->GetFrontTileIndex(MapIndex);
@@ -630,7 +625,7 @@ index 552fe95b3..5b594824f 100644
  	m_MoveRestrictions = Collision()->GetMoveRestrictions(IsSwitchActiveCb, this, m_Pos, 18.0f, MapIndex, &m_Core.m_DDNetPP.m_RestrictionData);
  
  	// ddnet++ start
-@@ -2354,6 +2525,14 @@ void CCharacter::DDRaceTick()
+@@ -2354,6 +2528,14 @@ void CCharacter::DDRaceTick()
  			Unfreeze();
  	}
  
@@ -645,7 +640,7 @@ index 552fe95b3..5b594824f 100644
  	HandleTuneLayer(); // need this before coretick
  
  	// check if the tee is in any type of freeze
-@@ -2516,6 +2695,11 @@ bool CCharacter::Unfreeze()
+@@ -2516,6 +2698,11 @@ bool CCharacter::Unfreeze()
  	KillFreeze(true);
  	if(m_FreezeTime > 0)
  	{
@@ -658,7 +653,7 @@ index 552fe95b3..5b594824f 100644
  		m_BlockWaveFreezeTicks = 0;
  		m_pPlayer->m_IsBlockWaveDead = false;
 diff --git a/src/game/server/entities/character.h b/src/game/server/entities/character.h
-index 3d8aea0c4..cf1ef1d5f 100644
+index 3d8aea0c4..d8b857b75 100644
 --- a/src/game/server/entities/character.h
 +++ b/src/game/server/entities/character.h
 @@ -166,6 +166,8 @@ private:
@@ -712,11 +707,12 @@ index 3d8aea0c4..cf1ef1d5f 100644
  	CCharacterCore GetCore() { return m_Core; }
  	void SetCore(const CCharacterCore &Core) { m_Core = Core; }
  	const CCharacterCore *Core() const { return &m_Core; }
-@@ -319,6 +340,9 @@ public:
+@@ -319,6 +340,10 @@ public:
  	bool GrenadeHitDisabled() const { return m_Core.m_GrenadeHitDisabled; }
  
  	void SetHammerHitDisabled(bool HammerHitDisabled) { m_Core.m_HammerHitDisabled = HammerHitDisabled; }
 +	bool m_NoKnockback = false;
++	bool m_PluginDeepFreeze = false;
 +	bool m_GodMode = false;
 +	bool m_WeaponLock = false;
  	void SetShotgunHitDisabled(bool ShotgunHitDisabled) { m_Core.m_ShotgunHitDisabled = ShotgunHitDisabled; }
@@ -822,7 +818,7 @@ index 00171b19a..143a83254 100644
  	if(m_Type == WEAPON_SHOTGUN)
  	{
 diff --git a/src/game/server/gamecontext.cpp b/src/game/server/gamecontext.cpp
-index eacb3d09e..202f08e7f 100644
+index eacb3d09e..142b1c0ba 100644
 --- a/src/game/server/gamecontext.cpp
 +++ b/src/game/server/gamecontext.cpp
 @@ -1,3 +1,4 @@
@@ -1089,7 +1085,7 @@ index eacb3d09e..202f08e7f 100644
  				Console()->ExecuteLine(pMsg->m_pMessage + 1, ClientId, false);
  			}
  			// m_apPlayers[ClientId] can be nullptr, if the player used a
-@@ -3571,170 +3783,1247 @@ void CGameContext::ConBroadcast(IConsole::IResult *pResult, void *pUserData)
+@@ -3571,170 +3783,1249 @@ void CGameContext::ConBroadcast(IConsole::IResult *pResult, void *pUserData)
  	pSelf->SendBroadcast(aBuf, -1);
  }
  
@@ -1384,13 +1380,15 @@ index eacb3d09e..202f08e7f 100644
 +void CGameContext::ConSetFreeze(IConsole::IResult *pResult, void *pUserData)
 +{
 +	CGameContext *pSelf = (CGameContext *)pUserData;
++	int Cid = pResult->GetInteger(0);
 +	int Secs = pResult->GetInteger(1);
-+	if(CCharacter *pChr = pSelf->GetPlayerChar(pResult->GetInteger(0)))
++	if(Cid >= 0 && Cid < MAX_CLIENTS && pSelf->m_apPlayers[Cid]) pSelf->m_apPlayers[Cid]->m_PluginForceDeepFreeze = (Secs > 0);
++	if(CCharacter *pChr = pSelf->GetPlayerChar(Cid))
  	{
 -		if(pPlayer)
 -			pPlayer->m_SendVoteIndex = 0;
-+		if(Secs > 0) pChr->Freeze(Secs);
-+		else pChr->Unfreeze();
++		if(Secs > 0) { pChr->m_PluginDeepFreeze = true; pChr->SetDeepFrozen(true); pChr->SetLiveFrozen(true); pChr->Core()->m_Vel = vec2(0, 0); pChr->Freeze(Secs); }
++		else { pChr->m_PluginDeepFreeze = false; pChr->SetDeepFrozen(false); pChr->SetLiveFrozen(false); pChr->Unfreeze(); }
  	}
 +}
  
@@ -2458,7 +2456,7 @@ index eacb3d09e..202f08e7f 100644
  
  		// copy option
  		int Len = str_length(pSrc->m_aCommand);
-@@ -4094,6 +5383,89 @@ void CGameContext::OnConsoleInit()
+@@ -4094,6 +5385,90 @@ void CGameContext::OnConsoleInit()
  	Console()->Register("mod_alert", "v[id] r[message]", CFGFLAG_SERVER, ConModAlert, this, "Send a moderator alert message to player");
  	Console()->Register("broadcast", "r[message]", CFGFLAG_SERVER, ConBroadcast, this, "Broadcast message");
  	Console()->Register("say", "r[message]", CFGFLAG_SERVER, ConSay, this, "Say in chat");
@@ -2512,6 +2510,7 @@ index eacb3d09e..202f08e7f 100644
 +	Console()->Register("set_player_score", "si", CFGFLAG_SERVER, ConSetPlayerScore, this, "Set player scoreboard points CidOrNick Score");
 +	Console()->Register("set_player_team", "ii", CFGFLAG_SERVER, ConSetPlayerTeam, this, "Set player team Cid Team (0=red, 1=blue, -1=spec)");
 +	Console()->Register("set_team_score", "ii", CFGFLAG_SERVER, ConSetTeamScore, this, "Set team scores Red Blue");
++	Console()->Register("give_xp", "ii", CFGFLAG_SERVER, [](IConsole::IResult *pRes, void *pUser) { CGameContext *pS = (CGameContext *)pUser; int C = pRes->GetInteger(0); if(C >= 0 && C < MAX_CLIENTS && pS->m_apPlayers[C]) pS->m_apPlayers[C]->GiveXP(pRes->GetInteger(1)); }, this, "Give XP to player Cid Amount");
 +	Console()->Register("remove_visual_pickup", "i", CFGFLAG_SERVER, ConRemoveVisualPickup, this, "Remove visual pickup ID");
 +	Console()->Register("spawn_visual_tee", "iffsiii", CFGFLAG_SERVER, ConSpawnVisualTee, this, "Spawn visual tee ID X Y Skin ColorBody ColorFeet Freeze");
 +	Console()->Register("remove_visual_tee", "i", CFGFLAG_SERVER, ConRemoveVisualTee, this, "Remove visual tee ID");
@@ -2548,7 +2547,7 @@ index eacb3d09e..202f08e7f 100644
  	Console()->Register("set_team", "v[id] i[team-id] ?i[delay in minutes]", CFGFLAG_SERVER, ConSetTeam, this, "Set team for a player (spectators = -1, game = 0)");
  	Console()->Register("hot_reload", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConHotReload, this, "Reload the map while preserving the state of tees and teams");
  	Console()->Register("reload_censorlist", "", CFGFLAG_SERVER, ConReloadCensorlist, this, "Reload the censorlist");
-@@ -4127,7 +5499,7 @@ void CGameContext::RegisterDDRaceCommands()
+@@ -4127,7 +5502,7 @@ void CGameContext::RegisterDDRaceCommands()
  	Console()->Register("totelecp", "i[number]", CFGFLAG_SERVER | CMDFLAG_TEST, ConToCheckTeleporter, this, "Teleports you to checkpoint teleporter i");
  	Console()->Register("tele", "?v[id] ?v[id]", CFGFLAG_SERVER | CMDFLAG_TEST, ConTeleport, this, "Teleports player i (or you) to player i (or you to where you look at)");
  	Console()->Register("addweapon", "i[weapon-id]", CFGFLAG_SERVER | CMDFLAG_TEST, ConAddWeapon, this, "Gives weapon with id i to you (all = -1, hammer = 0, gun = 1, shotgun = 2, grenade = 3, laser = 4, ninja = 5)");
@@ -2557,7 +2556,7 @@ index eacb3d09e..202f08e7f 100644
  	Console()->Register("shotgun", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConShotgun, this, "Gives a shotgun to you");
  	Console()->Register("grenade", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConGrenade, this, "Gives a grenade launcher to you");
  	Console()->Register("laser", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConLaser, this, "Gives a laser to you");
-@@ -4888,6 +6260,92 @@ void CGameContext::OnSnap(int ClientId, bool GlobalSnap, bool RecordingDemo)
+@@ -4888,6 +6263,92 @@ void CGameContext::OnSnap(int ClientId, bool GlobalSnap, bool RecordingDemo)
  
  	m_World.Snap(ClientId);
  
@@ -3055,7 +3054,7 @@ index ac69c4e11..dc31dfbe9 100644
  			m_aNameChangeMutes[m_NumNameChangeMutes].m_Addr = *pAddr;
  			Changes = m_aNameChangeMutes[m_NumNameChangeMutes].m_NumAttempts = 1;
 diff --git a/src/game/server/gamecontroller.cpp b/src/game/server/gamecontroller.cpp
-index 63813bf32..3bdeb7d58 100644
+index 63813bf32..2a022c6cc 100644
 --- a/src/game/server/gamecontroller.cpp
 +++ b/src/game/server/gamecontroller.cpp
 @@ -479,6 +479,8 @@ void IGameController::ResetGame()
@@ -3093,18 +3092,19 @@ index 63813bf32..3bdeb7d58 100644
  	GameInfo.m_GameStateFlags = 0;
  	if(m_GameOverTick != -1)
  		GameInfo.m_GameStateFlags |= GAMESTATEFLAG_GAMEOVER;
-@@ -732,6 +737,10 @@ void IGameController::Snap(int SnappingClient)
+@@ -732,6 +737,11 @@ void IGameController::Snap(int SnappingClient)
  	GameInfoEx.m_NumDDRaceTeams = NUM_DDRACE_TEAMS;
  	GameInfoEx.m_Flags = SnapGameInfoExFlags(SnappingClient, GameInfoEx.m_Flags); // ddnet-insta
  	GameInfoEx.m_Flags2 = SnapGameInfoExFlags2(SnappingClient, GameInfoEx.m_Flags2); // ddnet-insta
 +	if(m_PluginMode > 0)
 +	{
 +		GameInfoEx.m_Flags &= ~(GAMEINFOFLAG_TIMESCORE | GAMEINFOFLAG_RACE | GAMEINFOFLAG_GAMETYPE_RACE | GAMEINFOFLAG_RACE_RECORD_MESSAGE);
++		GameInfoEx.m_Flags2 |= GAMEINFOFLAG2_HUD_HEALTH_ARMOR;
 +	}
  	Server()->SnapNewItem(0, GameInfoEx);
  
  	if(Server()->IsSixup(SnappingClient))
-@@ -760,7 +769,7 @@ void IGameController::Snap(int SnappingClient)
+@@ -760,7 +770,7 @@ void IGameController::Snap(int SnappingClient)
  
  	GameServer()->SnapSwitchers(SnappingClient);
  
@@ -3113,7 +3113,7 @@ index 63813bf32..3bdeb7d58 100644
  	{
  		CFinishTime MapTime = SnapMapBestTime(SnappingClient);
  		if(MapTime.m_Seconds != FinishTime::UNSET)
-@@ -791,6 +800,25 @@ bool IGameController::CanJoinTeam(int Team, int NotThisId, char *pErrorReason, i
+@@ -791,6 +801,25 @@ bool IGameController::CanJoinTeam(int Team, int NotThisId, char *pErrorReason, i
  			str_copy(pErrorReason, "Use /pause first then you can kill", ErrorReasonSize);
  		return false;
  	}
@@ -3139,7 +3139,7 @@ index 63813bf32..3bdeb7d58 100644
  	if(Team == TEAM_SPECTATORS || (pPlayer && pPlayer->GetTeam() != TEAM_SPECTATORS))
  		return true;
  
-@@ -890,6 +918,7 @@ void IGameController::DoTeamChange(CPlayer *pPlayer, int Team, bool DoChatMsg)
+@@ -890,6 +919,7 @@ void IGameController::DoTeamChange(CPlayer *pPlayer, int Team, bool DoChatMsg)
  		GameServer()->SendChat(-1, TEAM_ALL, aBuf);
  	}
  
@@ -3246,7 +3246,7 @@ index cac0012bf..a0842affa 100644
  		pPlayer->OnHumanVerify();
  
 diff --git a/src/game/server/player.cpp b/src/game/server/player.cpp
-index 9f852065d..50ce2c7eb 100644
+index 9f852065d..321b91cf3 100644
 --- a/src/game/server/player.cpp
 +++ b/src/game/server/player.cpp
 @@ -202,6 +202,20 @@ void CPlayer::Tick()
@@ -3270,7 +3270,26 @@ index 9f852065d..50ce2c7eb 100644
  
  	if(m_ChatScore > 0)
  		m_ChatScore--;
-@@ -365,14 +379,16 @@ void CPlayer::Snap(int SnappingClient)
+@@ -322,7 +336,17 @@ void CPlayer::PostTick()
+ 		}
+ 	}
+ 
+-	// update view pos for spectators
++	// update view pos for spectators (restrict paused team players to teammates only)
++	if(m_Paused && (m_Team == TEAM_RED || m_Team == TEAM_BLUE))
++	{
++		if(m_SpectatorId == SPEC_FREEVIEW || m_SpectatorId < 0 || m_SpectatorId >= MAX_CLIENTS || !GameServer()->m_apPlayers[m_SpectatorId] || GameServer()->m_apPlayers[m_SpectatorId]->GetTeam() != m_Team)
++		{
++			m_SpectatorId = m_ClientId;
++			for(int i = 0; i < MAX_CLIENTS; ++i)
++				if(GameServer()->m_apPlayers[i] && GameServer()->m_apPlayers[i]->GetTeam() == m_Team && GameServer()->m_apPlayers[i]->GetCharacter() && !GameServer()->m_apPlayers[i]->m_PluginForceDeepFreeze)
++				{ m_SpectatorId = i; break; }
++		}
++	}
+ 	if((m_Team == TEAM_SPECTATORS || m_Paused) && m_SpectatorId != SPEC_FREEVIEW && GameServer()->m_apPlayers[m_SpectatorId] && GameServer()->m_apPlayers[m_SpectatorId]->GetCharacter())
+ 		m_ViewPos = GameServer()->m_apPlayers[m_SpectatorId]->GetCharacter()->m_Pos;
+ 
+@@ -365,14 +389,16 @@ void CPlayer::Snap(int SnappingClient)
  	}
  	if(m_IsHiddenTee && SnappingClient != GetCid())
  		return;
@@ -3289,7 +3308,7 @@ index 9f852065d..50ce2c7eb 100644
  	ClientInfo.m_Country = Server()->ClientCountry(m_ClientId);
  
  	if(!DDPPSnapChangeSkin(&ClientInfo))
-@@ -382,6 +398,11 @@ void CPlayer::Snap(int SnappingClient)
+@@ -382,6 +408,11 @@ void CPlayer::Snap(int SnappingClient)
  		ClientInfo.m_ColorBody = m_TeeInfos.m_ColorBody;
  		ClientInfo.m_ColorFeet = m_TeeInfos.m_ColorFeet;
  	}
@@ -3301,7 +3320,7 @@ index 9f852065d..50ce2c7eb 100644
  	// ddnet-insta
  	GameServer()->m_pController->SnapClientInfo(SnappingClient, this, &ClientInfo);
  	Server()->SnapNewItem(TranslatedId, ClientInfo);
-@@ -389,6 +410,8 @@ void CPlayer::Snap(int SnappingClient)
+@@ -389,6 +420,8 @@ void CPlayer::Snap(int SnappingClient)
  	int SnappingClientVersion = GameServer()->GetClientVersion(SnappingClient);
  	int Latency = SnappingClient == SERVER_DEMO_CLIENT ? m_Latency.m_Min : GameServer()->m_apPlayers[SnappingClient]->m_aCurLatency[m_ClientId];
  	int Score = GameServer()->m_pController->SnapPlayerScore(SnappingClient, this);
@@ -3310,7 +3329,7 @@ index 9f852065d..50ce2c7eb 100644
  
  	if(!Server()->IsSixup(SnappingClient))
  	{
-@@ -518,6 +541,11 @@ void CPlayer::Snap(int SnappingClient)
+@@ -518,6 +551,11 @@ void CPlayer::Snap(int SnappingClient)
  	IGameController::CFinishTime PlayerTime = GameServer()->m_pController->SnapPlayerTime(SnappingClient, this);
  	DDNetPlayer.m_FinishTimeSeconds = PlayerTime.m_Seconds;
  	DDNetPlayer.m_FinishTimeMillis = PlayerTime.m_Milliseconds;
@@ -3322,7 +3341,7 @@ index 9f852065d..50ce2c7eb 100644
  	Server()->SnapNewItem(TranslatedId, DDNetPlayer);
  
  	if(Server()->IsSixup(SnappingClient) && m_pCharacter && m_pCharacter->m_DDRaceState == ERaceState::STARTED &&
-@@ -783,6 +811,24 @@ CCharacter *CPlayer::ForceSpawn(vec2 Pos)
+@@ -783,6 +821,24 @@ CCharacter *CPlayer::ForceSpawn(vec2 Pos)
  	return m_pCharacter;
  }
  
@@ -3348,7 +3367,7 @@ index 9f852065d..50ce2c7eb 100644
  {
  	KillCharacter();
 diff --git a/src/game/server/player.h b/src/game/server/player.h
-index 0429f833b..f111a0a2d 100644
+index 0429f833b..5881f3467 100644
 --- a/src/game/server/player.h
 +++ b/src/game/server/player.h
 @@ -128,6 +128,7 @@ public:
@@ -3369,11 +3388,12 @@ index 0429f833b..f111a0a2d 100644
  	CNetObj_ClientInfo m_ClientInfo = {};
  	bool m_ClientInfoValid = false;
  
-@@ -283,6 +286,8 @@ public:
+@@ -283,6 +286,9 @@ public:
  	bool m_BirthdayAnnounced;
  
  	int m_RescueMode;
 +	int m_PluginScore = 0;
++	bool m_PluginForceDeepFreeze = false;
 +	void SetPluginTeam(int Team);
  
  	CSaveTee m_LastTeleTee;

@@ -1664,7 +1664,7 @@ impl ServerApi {
                 rest.split_whitespace().collect()
             };
             if p.len() >= 5 {
-                let (dir_i, jump_i, hook_i, fire_i) = if is_colon { (4, 2, 3, 1) } else { (1, 2, 3, 4) };
+                let (dir_i, jump_i, hook_i, fire_i) = if is_colon { (4, 3, 2, 1) } else { (1, 2, 3, 4) };
                 return Some(Event::Input {
                     cid: p.first()?.parse().ok()?,
                     dir: p.get(dir_i)?.parse().ok()?,
@@ -1677,7 +1677,7 @@ impl ServerApi {
             }
         }
         if let Some(rest) = body.strip_prefix("DEATH|") {
-            let p: Vec<&str> = rest.split_whitespace().collect();
+            let p: Vec<&str> = if rest.contains(':') { rest.split(':').collect() } else { rest.split_whitespace().collect() };
             if p.len() >= 3 {
                 return Some(Event::Death {
                     cid: p.first()?.parse().ok()?,
@@ -1687,7 +1687,7 @@ impl ServerApi {
             }
         }
         if let Some(rest) = body.strip_prefix("DAMAGE|") {
-            let p: Vec<&str> = rest.split_whitespace().collect();
+            let p: Vec<&str> = if rest.contains(':') { rest.split(':').collect() } else { rest.split_whitespace().collect() };
             if p.len() >= 4 {
                 return Some(Event::Damage {
                     cid: p.first()?.parse().ok()?,
