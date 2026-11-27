@@ -7,8 +7,3 @@ description = "DDNetPR Plugin Manager & IPC Router v11.7 LTS (2026)"
 license = "MIT"
 
 [dependencies]
-
-[profile.release]
-opt-level = 3
-lto = "thin"
-strip = true
