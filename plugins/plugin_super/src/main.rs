@@ -92,12 +92,13 @@ fn toggle_super(api: &mut ServerApi, cid: i32, player: &str, supers: &mut HashSe
 
 /// Проверяет право игрока на выполнение админ-команд плагина super (включая алиас !god).
 fn can_exec_super_cmd(api: &ServerApi, player: &str, cmd: &str) -> bool {
-    matches!(cmd, "!super" | "!god" | "!vanish" | "!tp" | "!bring") && api.is_staff(player)
+    matches!(cmd, "!super" | "!god" | "!vanish" | "!tp" | "!bring" | "!reload") && api.is_staff(player)
 }
 
 fn main() {
     let mut api = ServerApi::new();
-    api.set_manifest("11.0.0", &["player_control"]);
+    api.set_manifest("11.0.0", &["player_control", "server_control"]);
+    api.register_cmd("reload", "", "Перезагрузить текущую карту (Staff/Admin)");
     api.register_admin_plugin("super", "Режим бога: !super (!god), !tp, !bring, !vanish");
     let (mut supers, mut vanishes, mut fire_held, mut hook_held, mut active_wpn, mut fly_tick) =
         (HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashMap::new(), 0u32);
@@ -109,6 +110,7 @@ fn main() {
             let Some(&cid) = api.player_cids.get(&player) else { return EventAction::Continue };
             match cmd {
                 "!super" | "!god" => toggle_super(api, cid, &player, &mut supers, &mut active_wpn),
+                "!reload" => { api.say("[Admin] Перезагрузка текущей карты..."); api.raw("reload"); return EventAction::Cancel; }
                 "!vanish" => {
                     let st = !vanishes.remove(&cid); if st { vanishes.insert(cid); }
                     api.set_phys(cid, "collision", !st); api.set_phys(cid, "hammer_hit", !st); api.set_phys(cid, "hook_hit", !st); api.play_sound(cid, if st { 28 } else { 30 });
