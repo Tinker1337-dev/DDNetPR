@@ -103,7 +103,7 @@ cargo build --release --workspace
 
 #### Patch & Build the C++20 Server Core
 ```bash
-git clone https://github.com
+git clone https://github.com/DDNetPP/DDNetPP
 cd DDNetPP
 git checkout 4e458fa81
 git submodule update --init --recursive
