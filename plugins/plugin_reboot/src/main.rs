@@ -81,9 +81,11 @@ fn main() {
                         }
                         if is_manual {
                             let sdir = std::env::var("DDNET_SERVER_DIR").unwrap_or_else(|_| "/root/server_run".to_string());
-                            let _ = std::process::Command::new("sh")
+                            // Запускаем рестарт в отдельной сессии (setsid), чтобы pkill в start.sh не оборвал скрипт
+                            let _ = std::process::Command::new("setsid")
+                                .arg("sh")
                                 .arg("-c")
-                                .arg(format!("sleep 1 && cd {} && ./start.sh", sdir))
+                                .arg(format!("sleep 1 && cd {} && ./start.sh >/tmp/ddnet_reboot.log 2>&1 </dev/null", sdir))
                                 .spawn();
                         }
                     }
