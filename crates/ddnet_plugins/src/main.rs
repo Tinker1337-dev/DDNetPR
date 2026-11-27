@@ -36,9 +36,7 @@ fn sync_track_pos(plugins: &Arc<Mutex<Vec<ManagedPlugin>>>) {
     use std::sync::atomic::{AtomicBool, Ordering};
     static CUR: AtomicBool = AtomicBool::new(false);
     let want = plugins.lock().map(|l| l.iter().any(|x| x.enabled && x.track_pos)).unwrap_or(false);
-    if CUR.swap(want, Ordering::SeqCst) != want {
-        send_fifo(if want { "track_positions 1" } else { "track_positions 0" });
-    }
+    CUR.store(want, Ordering::SeqCst);
 }
 
 #[derive(Clone, Default)]
@@ -600,7 +598,7 @@ fn spawn_plugin(
                                     let fk = format!("{}:{}", acc, k);
                                     let cur: i64 =
                                         map.get(&fk).and_then(|v| v.parse().ok()).unwrap_or(0);
-                                    map.insert(fk, (cur + delta).max(0).to_string());
+                                    if let Some(nx) = cur.checked_add(delta) { map.insert(fk, nx.max(0).to_string()); save_db(&map); } else { log_plugin_err(&pname, "DbMathOverflow"); }
                                     save_db(&map);
                                 }
                             }
@@ -623,8 +621,7 @@ fn spawn_plugin(
                                             .get(&fk_to)
                                             .and_then(|v| v.parse().ok())
                                             .unwrap_or(0);
-                                        map.insert(fk_from, (bal_from - amt).to_string());
-                                        map.insert(fk_to, (bal_to + amt).to_string());
+                                        if let (Some(nf), Some(nt)) = (bal_from.checked_sub(amt), bal_to.checked_add(amt)) { map.insert(fk_from, nf.to_string()); map.insert(fk_to, nt.to_string()); }
                                         save_db(&map);
                                         "OK"
                                     } else {
@@ -643,7 +640,7 @@ fn spawn_plugin(
                                     && let (Ok(fk), Ok(delta), Ok(mut map)) = (resolve_db_key(&pname, is_adm, DbOp::Write, k), d.parse::<i64>(), db.lock())
                                 {
                                     let cur: i64 = map.get(&fk).and_then(|v| v.parse().ok()).unwrap_or(0);
-                                    map.insert(fk, (cur + delta).max(0).to_string());
+                                    if let Some(nx) = cur.checked_add(delta) { map.insert(fk, nx.max(0).to_string()); save_db(&map); } else { log_plugin_err(&pname, "DbMathOverflow"); }
                                     save_db(&map);
                                 }
                             }
@@ -697,7 +694,7 @@ fn spawn_plugin(
                                         Ok((fp, sl)) => {
                                             if let Ok(m) = db.lock() {
                                                 for (k, v) in m.iter() {
-                                                    if k.starts_with(&fp) && k.len() >= sl { pairs.push(format!("{}={}", &k[sl..], v)); }
+                                                    if k.starts_with(&fp) && k.len() >= sl { let esc = |x: &str| x.replace('%', "%25").replace(';', "%3B").replace('=', "%3D").replace('|', "%7C"); pairs.push(format!("{}={}", esc(&k[sl..]), esc(v))); }
                                                 }
                                             }
                                         }

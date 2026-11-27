@@ -4,6 +4,23 @@ use std::f32::consts::TAU;
 
 struct Strike { x: f32, y: f32, target_cid: Option<i32>, start_ms: u64, owner_cid: i32, last_beep: u64, last_draw: u64 }
 
+/// Проверяет доступ к !sunstrike по авторизованному аккаунту, роли стаффа или build_admins.txt.
+fn can_use_sunstrike_with_list(api: &ServerApi, player: &str, admins_txt: &str) -> bool {
+    let acc = match api.authed_accounts.get(player) {
+        Some(a) if !a.is_empty() => a.as_str(),
+        _ => return false,
+    };
+    if api.is_staff(player) {
+        return true;
+    }
+    admins_txt.lines().map(str::trim).filter(|l| !l.is_empty()).any(|l| l.eq_ignore_ascii_case(acc))
+}
+
+fn can_use_sunstrike(api: &ServerApi, player: &str) -> bool {
+    let txt = std::fs::read_to_string(ddnet_sdk::resolve_server_path("build_admins.txt")).unwrap_or_default();
+    can_use_sunstrike_with_list(api, player, &txt)
+}
+
 fn main() {
     let mut api = ServerApi::new();
     api.register_plugin("sunstrike", "!sunstrike — орбитальный удар с самонаведением (Admin/Owner)");
@@ -18,7 +35,7 @@ fn main() {
         match ev {
             Event::Chat { player, message, .. } => {
                 if message.trim() == "!sunstrike" {
-                    let cid = api.player_cids.get(&player).or_else(|| api.cids.get(&player)).copied().unwrap_or(0); if !api.is_staff(&player) && !std::fs::read_to_string("build_admins.txt").unwrap_or_default().lines().any(|l| !l.trim().is_empty() && player.contains(l.trim())) { api.broadcast_to(cid, "Только для Admin/Owner."); return; }
+                    let cid = match api.player_cids.get(&player).or_else(|| api.cids.get(&player)).copied() { Some(c) => c, None => return }; if !can_use_sunstrike(api, &player) { api.broadcast_to(cid, "Только для Admin/Owner."); return; }
                     {
                         if armed.remove(&cid) { api.broadcast_to(cid, "☀ Режим SUNSTRIKE выключен."); }
                         else { armed.insert(cid); api.broadcast_to(cid, "☀ Режим SUNSTRIKE включен! Стреляй для удара."); }
@@ -29,8 +46,12 @@ fn main() {
                     return;
                 }
             }
+            Event::Ipc { from, payload } if from == "manager" && payload.starts_with("MAP_CHANGE|") => {
+                armed.clear(); strikes.clear(); last_fire.clear();
+                api.track_positions(false); api.enable_fast_tick(false);
+            }
             Event::Leave { player } => {
-                if let Some(&cid) = api.player_cids.get(&player).or_else(|| api.cids.get(&player)) { armed.remove(&cid); last_fire.remove(&cid); }
+                if let Some(cid) = api.last_leave_cid.or_else(|| api.player_cids.get(&player).or_else(|| api.cids.get(&player)).copied()) { armed.remove(&cid); last_fire.remove(&cid); }
                 let act = !armed.is_empty() || !strikes.is_empty();
                 api.track_positions(act);
                 api.enable_fast_tick(act);
@@ -143,4 +164,18 @@ fn main() {
         }
         
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_sunstrike_permissions_and_spoofing() {
+        let mut api = ServerApi::new();
+        let admins = "BuilderAcc\n";
+        assert!(!can_use_sunstrike_with_list(&api, "BuilderAcc_fake", admins));
+        assert!(!can_use_sunstrike_with_list(&api, "BuilderAcc", admins));
+        api.authed_accounts.insert("Nick1".into(), "BuilderAcc".into());
+        assert!(can_use_sunstrike_with_list(&api, "Nick1", admins));
+    }
 }

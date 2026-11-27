@@ -267,7 +267,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[test]
     fn test_super_commands_permissions() {
         let mut api = ServerApi::new();
         api.accounts.insert("Masua".to_string(), "Tinker1337".to_string());

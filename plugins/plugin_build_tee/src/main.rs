@@ -25,7 +25,7 @@ fn can_build(api: &ServerApi, player: &str) -> bool {
     if fs::metadata(ADMINS_PATH).is_err() {
         let _ = fs::write(ADMINS_PATH, "Tinker1337\n");
     }
-    let admins_txt = fs::read_to_string(ADMINS_PATH).unwrap_or_default();
+    let admins_txt = std::fs::read_to_string(ddnet_sdk::resolve_server_path("build_admins.txt")).unwrap_or_default();
     can_build_with_list(api, player, &admins_txt)
 }
 

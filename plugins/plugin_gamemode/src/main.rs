@@ -173,7 +173,7 @@ mod tests {
 
     #[test]
     fn test_gamemode_join_rename_leave_and_map_change_cleanup() {
-        let mut api = ServerApi::new();
+        let api = ServerApi::new();
         let (mut scores, mut teams, mut cids_map) = (HashMap::new(), HashMap::new(), HashMap::new());
         let (mut red, mut blue) = (3, 2);
 

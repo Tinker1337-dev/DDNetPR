@@ -380,7 +380,9 @@ pub(crate) fn sanitize_ipc_val(s: &str) -> String {
     s.chars().filter(|&c| !c.is_control() || c == '\t').collect()
 }
 /// Декодирует экранированные символы IPC-поля (%7C -> |, %25 -> %).
-pub(crate) fn unescape_ipc_field(s: &str) -> String {
+// Однопроходное декодирование полей списка DB_LIST
+pub(crate) fn unescape_db_list(v: &str) -> String { let mut o = String::with_capacity(v.len()); let b = v.as_bytes(); let mut i = 0; while i < b.len() { if b[i] == b'%' && i + 2 < b.len() { match &b[i+1..i+3] { b"25" => { o.push('%'); i += 3; continue; } b"3B" => { o.push(';'); i += 3; continue; } b"3D" => { o.push('='); i += 3; continue; } b"7C" => { o.push('|'); i += 3; continue; } _ => {} } } o.push(b[i] as char); i += 1; } o }
+fn unescape_ipc_field(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let bytes = s.as_bytes();
     let mut i = 0;
@@ -596,7 +598,18 @@ impl ServerApi {
     /// api.whisper("nameless", "Hi!");
     /// ```
     pub fn whisper(&self, player: &str, msg: &str) {
-        self.raw(&format!("whisper \"{}\" \"{}\"", sanitize_quoted_text(player), sanitize_quoted_text(msg)));
+        // Ищем актуальный CID игрока по нику для отправки через команду ядра plugin_chat_to
+        if let Some((&cid, _)) = self.names.iter().find(|(_, nick)| nick.as_str() == player) {
+            self.whisper_cid(cid, msg);
+        }
+    }
+
+    /// Отправляет личное сообщение (шёпот) игроку напрямую по числовому CID.
+    pub fn whisper_cid(&self, cid: i32, msg: &str) {
+        if validate_cid(cid).is_err() {
+            return;
+        }
+        self.raw(&format!("plugin_chat_to {} \"{}\"", cid, sanitize_quoted_text(msg)));
     }
 
     /// Отправляет личное сообщение (шёпот) игроку по типизированному `PlayerId`.
@@ -608,9 +621,7 @@ impl ServerApi {
     /// api.whisper_id(PlayerId(0), "Hi!");
     /// ```
     pub fn whisper_id(&self, cid: PlayerId, msg: &str) {
-        if let Some(nick) = self.names.get(&cid.0) {
-            self.whisper(nick, msg);
-        }
+        self.whisper_cid(cid.0, msg);
     }
 
     /// Отправляет прямое межплагинное IPC-сообщение плагину `target`.
@@ -1169,7 +1180,11 @@ impl ServerApi {
     }
     /// Отправляет экранный баннер (broadcast) конкретному клиенту по CID.
     pub fn broadcast_to(&self, cid: i32, msg: &str) {
-        self.raw(&format!("broadcast_to {} \"{}\"", cid, sanitize_quoted_text(msg)));
+        if validate_cid(cid).is_err() {
+            return;
+        }
+        // Используем серверную команду C++-ядра plugin_broadcast_to
+        self.raw(&format!("plugin_broadcast_to {} \"{}\"", cid, sanitize_quoted_text(msg)));
     }
     /// Запрашивает ключи, начинающиеся с префикса (устаревший псевдоним v9.2).
     pub fn db_get_prefix(&self, req_id: &str, prefix: &str) {
@@ -1484,7 +1499,7 @@ impl ServerApi {
                 .filter(|s| !s.is_empty())
                 .filter_map(|kv| {
                     kv.split_once('=')
-                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                        .map(|(k, v)| (unescape_db_list(k), unescape_db_list(v)))
                 })
                 .collect();
             return Some(Event::DbList {
@@ -1807,6 +1822,15 @@ macro_rules! plugin {
 }
 
 /// Очищает имя карты от кавычек, переносов строк и управляющих символов.
+
+/// Резолвит путь к файлу сервера относительно `DDNET_SERVER_DIR` или текущего каталога.
+pub fn resolve_server_path(rel: &str) -> std::path::PathBuf {
+    match std::env::var("DDNET_SERVER_DIR") {
+        Ok(dir) if !dir.trim().is_empty() => std::path::PathBuf::from(dir.trim()).join(rel),
+        _ => std::path::PathBuf::from(rel),
+    }
+}
+/// Очищает и проверяет имя карты от недопустимых и управляющих символов.
 pub fn sanitize_map_name(map: &str) -> Option<String> {
     let clean: String = map
         .chars()
@@ -1945,5 +1969,28 @@ mod permission_tests {
         assert!(api.is_staff("Masua"));
         assert!(!api.is_staff("Guest"));
         assert!(!api.is_staff("UnauthedPlayer"));
+    }
+
+    #[test]
+    fn test_whisper_and_broadcast_to_commands() {
+        let mut api = ServerApi::new();
+        api.names.insert(3, "Tinker1337".to_string());
+        // Проверяем отправку личного сообщения по нику, по CID и персонального баннера
+        api.whisper("Tinker1337", "Привет, \"мир\"!");
+        api.whisper("UnknownPlayer", "Не должно отправиться");
+        api.whisper_cid(3, "Ответ по CID");
+        api.whisper_cid(64, "Невалидный CID");
+        api.broadcast_to(3, "Баннер");
+        api.broadcast_to(-1, "Невалидный CID");
+        // Вызовы не должны паниковать и должны корректно экранировать кавычки
+        assert_eq!(sanitize_quoted_text("Привет, \"мир\"!"), "Привет, 'мир'!");
+    }
+
+    #[test]
+    fn test_dblist_roundtrip() {
+        let mut api = ServerApi::new();
+        if let Some(Event::DbList { items, .. }) = api.parse_event("DB_LIST|r1|a%3Bb%3Dc=x%7Cy%25z") {
+            assert_eq!(items, vec![("a;b=c".into(), "x|y%z".into())]);
+        } else { panic!(); }
     }
 }

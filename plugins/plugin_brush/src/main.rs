@@ -20,7 +20,7 @@ fn can_use_brush_with_list(api: &ServerApi, player: &str, admins_txt: &str) -> b
 }
 
 fn can_use_brush(api: &ServerApi, player: &str) -> bool {
-    let admins_txt = std::fs::read_to_string("build_admins.txt").unwrap_or_default();
+    let admins_txt = std::fs::read_to_string(ddnet_sdk::resolve_server_path("build_admins.txt")).unwrap_or_default();
     can_use_brush_with_list(api, player, &admins_txt)
 }
 
